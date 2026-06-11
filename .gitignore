@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+data/raw/*.zip
+data/raw/*.csv
+data/processed/*.json
+models/*.pkl
+results/*.json
+results/*.csv
+*.log
