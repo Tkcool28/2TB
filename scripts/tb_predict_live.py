@@ -1115,7 +1115,7 @@ def main():
                             print("ERROR: LightGBM is required for the ensemble. Please run: pip install lightgbm")
                             raise SystemExit(1)
                         except Exception as e:
-                        failed_models.append((name, str(e)))
+                            failed_models.append((name, str(e)))
 
                 if failed_models:
                     for name, err in failed_models:

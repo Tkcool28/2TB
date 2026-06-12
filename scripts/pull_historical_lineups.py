@@ -27,7 +27,7 @@ RAW_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "raw")
 OUTPUT_PATH = os.path.join(RAW_DIR, "historical_lineups.json")
 PROGRESS_PATH = os.path.join(RAW_DIR, "lineup_pull_progress.json")
 
-SCHEDULE_YEARS = [2022, 2023, 2024]
+SCHEDULE_YEARS = [2022, 2023, 2024, 2025]
 REQUEST_DELAY = 1.2  # seconds between API calls
 
 
