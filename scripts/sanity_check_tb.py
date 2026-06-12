@@ -2,7 +2,7 @@
 """
 sanity_check_tb.py
 ===================
-Lightweight sanity checks for the 2+ TB model pipeline.
+Lightweight sanity checks for the v2 2+ TB model pipeline (34 features).
 
 Checks:
   1. Feature files exist and non-empty
@@ -26,21 +26,90 @@ PROCESSED_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "processed
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
 
-EXPECTED_FEATURES = 48  # Total number of features
+EXPECTED_FEATURES = 34  # v2 feature count (deduped from 48)
+
+# Metadata/target columns excluded from feature set
+META_COLS = {"target_2tb", "total_bases", "game_pk", "player_id", "game_date", "season", "team"}
+
+# Exact v2 feature order (must match scaler training order)
+V2_FEATURE_ORDER = [
+    "roll_7d_tb_rate",
+    "roll_15d_tb_rate",
+    "roll_30d_tb_rate",
+    "season_slg",
+    "season_hr_rate",
+    "season_xbh_rate",
+    "season_bb_pct",
+    "season_k_pct",
+    "is_home",
+    "platoon_advantage",
+    "park_factor",
+    "park_hr_factor",
+    "lineup_position",
+    "hit_streak",
+    "days_rest",
+    "is_dome",
+    "temp_proxy",
+    "xba",
+    "xwoba",
+    "barrel_pct",
+    "avg_exit_velo",
+    "launch_angle",
+    "sprint_speed",
+    "pitcher_xslg_against",
+    "pitcher_xwoba_against",
+    "pitcher_barrel_pct_allowed",
+    "pitcher_hard_hit_pct_allowed",
+    "pitcher_avg_ev_allowed",
+    "pitcher_whip",
+    "pitcher_ops_against",
+    "pitcher_vs_batter_hand_slg",
+    "pitcher_days_rest",
+    "pitcher_recent_era_5g",
+    "lineup_team_ops",
+]
+
+
+def get_feature_names():
+    """Derive feature names from the first row of train_tb_v2.json in insertion order.
+
+    Excludes META_COLS. Validates against the exact V2_FEATURE_ORDER.
+    """
+    train_path = os.path.join(PROCESSED_DIR, "train_tb_v2.json")
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(f"Missing: {train_path}")
+    with open(train_path) as f:
+        data = json.load(f)
+    if not data:
+        raise ValueError("train_tb_v2.json is empty")
+    feature_names = [k for k in data[0].keys() if k not in META_COLS]
+    if feature_names != V2_FEATURE_ORDER:
+        mismatch = []
+        for i, (got, exp) in enumerate(zip(feature_names, V2_FEATURE_ORDER)):
+            if got != exp:
+                mismatch.append(f"  index {i}: got '{got}' expected '{exp}'")
+        if len(feature_names) != len(V2_FEATURE_ORDER):
+            mismatch.append(f"  length: got {len(feature_names)} expected {len(V2_FEATURE_ORDER)}")
+        raise ValueError(
+            "Feature order mismatch between data and V2_FEATURE_ORDER:\n"
+            + "\n".join(mismatch)
+        )
+    return feature_names
 
 
 def check_files():
-    """Check that all required files exist."""
-    print("\n[1] File existence checks")
+    """Check that all required v2 files exist."""
+    print("\n[1] File existence checks (v2)")
     files = {
-        "train": os.path.join(PROCESSED_DIR, "train_tb.json"),
-        "validate": os.path.join(PROCESSED_DIR, "validate_tb.json"),
-        "holdout": os.path.join(PROCESSED_DIR, "holdout_tb.json"),
-        "logreg_model": os.path.join(MODELS_DIR, "logreg_tb.pkl"),
-        "xgb_model": os.path.join(MODELS_DIR, "xgb_tb.pkl"),
-        "scaler": os.path.join(MODELS_DIR, "scaler_tb.pkl"),
-        "training_results": os.path.join(RESULTS_DIR, "training_tb_results.json"),
-        "backtest_results": os.path.join(RESULTS_DIR, "backtest_tb.json"),
+        "train": os.path.join(PROCESSED_DIR, "train_tb_v2.json"),
+        "validate": os.path.join(PROCESSED_DIR, "validate_tb_v2.json"),
+        "holdout": os.path.join(PROCESSED_DIR, "holdout_tb_v2.json"),
+        "logreg_model": os.path.join(MODELS_DIR, "logreg_tb_v2.pkl"),
+        "xgb_model": os.path.join(MODELS_DIR, "xgb_tb_v2.pkl"),
+        "lgbm_model": os.path.join(MODELS_DIR, "lgbm_tb_v2.pkl"),
+        "scaler": os.path.join(MODELS_DIR, "scaler_tb_v2.pkl"),
+        "training_results": os.path.join(RESULTS_DIR, "training_tb_v2_results.json"),
+        "backtest_results": os.path.join(RESULTS_DIR, "backtest_tb_v2.json"),
     }
 
     all_ok = True
@@ -48,10 +117,8 @@ def check_files():
         exists = os.path.exists(path)
         size = os.path.getsize(path) if exists else 0
         status = "OK" if exists and size > 0 else "MISSING"
-        if status == "MISSING" and name in ["xgb_model"]:
-            status = "OPTIONAL"
-        else:
-            all_ok = all_ok and (exists and size > 0)
+        if status != "OK":
+            all_ok = False
         print(f"  {status:10s} {name:20s} ({size:,} bytes)")
 
     return all_ok
@@ -59,11 +126,11 @@ def check_files():
 
 def check_splits():
     """Check train/val/holdout date ranges."""
-    print("\n[2] Split date range checks")
+    print("\n[2] Split date range checks (v2)")
 
     splits = {}
     for name in ["train", "validate", "holdout"]:
-        path = os.path.join(PROCESSED_DIR, f"{name}_tb.json")
+        path = os.path.join(PROCESSED_DIR, f"{name}_tb_v2.json")
         if not os.path.exists(path):
             print(f"  MISSING: {name}")
             return False
@@ -72,7 +139,7 @@ def check_splits():
         if not data:
             print(f"  EMPTY: {name}")
             return False
-        dates = [r["date"] for r in data]
+        dates = [r["game_date"] for r in data]
         splits[name] = {"min": min(dates), "max": max(dates), "count": len(data)}
         print(f"  {name:10s}: {splits[name]['min']} to {splits[name]['max']} ({splits[name]['count']} rows)")
 
@@ -86,110 +153,177 @@ def check_splits():
 
 
 def check_features():
-    """Check feature consistency."""
-    print("\n[3] Feature checks")
+    """Check feature consistency from v2 training data."""
+    print("\n[3] Feature checks (v2)")
 
-    # Load training results
-    results_path = os.path.join(RESULTS_DIR, "training_tb_results.json")
-    if not os.path.exists(results_path):
-        print("  MISSING: training results")
+    try:
+        feature_names = get_feature_names()
+    except (FileNotFoundError, ValueError) as e:
+        print(f"  FAIL: {e}")
         return False
 
-    with open(results_path) as f:
-        results = json.load(f)
-
-    n_features = results.get("n_features", 0)
-    feature_names = results.get("feature_names", [])
-    print(f"  Features: {n_features}")
-    print(f"  Feature names: {len(feature_names)}")
+    n_features = len(feature_names)
+    print(f"  Derived features from data: {n_features}")
+    print(f"  Feature order validated against V2_FEATURE_ORDER")
 
     if n_features != EXPECTED_FEATURES:
-        print(f"  WARNING: Expected {EXPECTED_FEATURES} features, got {n_features}")
+        print(f"  FAIL: Expected {EXPECTED_FEATURES} features, got {n_features}")
+        return False
+    else:
+        print(f"  OK: Feature count matches expected {EXPECTED_FEATURES}")
 
-    # Check a sample row
-    with open(os.path.join(PROCESSED_DIR, "train_tb.json")) as f:
-        sample = json.load(f)[:1]
+    # Load data for row sampling
+    train_path = os.path.join(PROCESSED_DIR, "train_tb_v2.json")
+    with open(train_path) as f:
+        data = json.load(f)
 
-    if sample:
-        missing = [feat for feat in feature_names if feat not in sample[0]]
+    # Check first 100 rows (or all if fewer) have all features
+    sample_size = min(100, len(data))
+    missing_count = 0
+    for i in range(sample_size):
+        row = data[i]
+        missing = [feat for feat in feature_names if feat not in row]
         if missing:
-            print(f"  WARNING: Missing features in data: {missing[:5]}")
-        else:
-            print("  All features present in data")
+            missing_count += 1
+            if missing_count <= 3:
+                print(f"  WARNING: Row {i} missing features: {missing[:5]}")
+
+    if missing_count == 0:
+        print(f"  OK: All {sample_size} sampled rows have all {n_features} features")
+    else:
+        print(f"  FAIL: {missing_count}/{sample_size} rows missing features")
+        return False
 
     return True
 
 
 def check_models():
-    """Check models can load and predict."""
-    print("\n[4] Model checks")
+    """Check v2 models can load and predict."""
+    print("\n[4] Model checks (v2)")
 
     # Load scaler
-    scaler_path = os.path.join(MODELS_DIR, "scaler_tb.pkl")
+    scaler_path = os.path.join(MODELS_DIR, "scaler_tb_v2.pkl")
     if not os.path.exists(scaler_path):
-        print("  MISSING: scaler")
+        print("  MISSING: scaler_tb_v2.pkl")
         return False
     with open(scaler_path, "rb") as f:
         scaler = pickle.load(f)
+    print("  OK: scaler_tb_v2.pkl loaded")
 
-    # Load a sample and predict
-    with open(os.path.join(PROCESSED_DIR, "holdout_tb.json")) as f:
-        sample = json.load(f)[:5]
+    # Load holdout sample
+    holdout_path = os.path.join(PROCESSED_DIR, "holdout_tb_v2.json")
+    if not os.path.exists(holdout_path):
+        print("  MISSING: holdout_tb_v2.json")
+        return False
+    with open(holdout_path) as f:
+        holdout_data = json.load(f)
 
-    if not sample:
+    if not holdout_data:
         print("  No holdout data to test")
         return False
 
-    feature_names = results.get("feature_names", []) if 'results' in dir() else []
-    if not feature_names:
-        with open(os.path.join(RESULTS_DIR, "training_tb_results.json")) as f:
-            feature_names = json.load(f).get("feature_names", [])
+    sample = holdout_data[:5]
+
+    # Derive feature names using the shared helper (insertion order, no sorting)
+    feature_names = get_feature_names()
 
     X = np.array([[r.get(feat, 0) for feat in feature_names] for r in sample])
     X_scaled = scaler.transform(X)
 
     all_ok = True
-    for name in ["logreg", "xgb"]:
-        model_path = os.path.join(MODELS_DIR, f"{name}_tb.pkl")
-        if not os.path.exists(model_path):
-            print(f"  OPTIONAL MISSING: {name}_tb.pkl")
-            continue
-        with open(model_path, "rb") as f:
-            model = pickle.load(f)
+
+    # Check LogReg
+    logreg_path = os.path.join(MODELS_DIR, "logreg_tb_v2.pkl")
+    if not os.path.exists(logreg_path):
+        print("  FAIL: logreg_tb_v2.pkl missing")
+        all_ok = False
+    else:
+        with open(logreg_path, "rb") as f:
+            logreg = pickle.load(f)
         try:
-            proba = model.predict_proba(X_scaled)[:, 1]
-            print(f"  OK: {name} predicts {proba[:3].round(3)}...")
+            proba = logreg.predict_proba(X_scaled)[:, 1]
+            print(f"  OK: logreg predicts {proba[:3].round(3)}...")
         except Exception as e:
-            print(f"  ERROR: {name} failed: {e}")
+            print(f"  FAIL: logreg failed: {e}")
+            all_ok = False
+
+    # Check XGBoost
+    xgb_path = os.path.join(MODELS_DIR, "xgb_tb_v2.pkl")
+    if not os.path.exists(xgb_path):
+        print("  FAIL: xgb_tb_v2.pkl missing")
+        all_ok = False
+    else:
+        with open(xgb_path, "rb") as f:
+            xgb = pickle.load(f)
+        try:
+            proba = xgb.predict_proba(X_scaled)[:, 1]
+            print(f"  OK: xgb predicts {proba[:3].round(3)}...")
+        except Exception as e:
+            print(f"  FAIL: xgb failed: {e}")
+            all_ok = False
+
+    # Check LightGBM
+    lgbm_path = os.path.join(MODELS_DIR, "lgbm_tb_v2.pkl")
+    if not os.path.exists(lgbm_path):
+        print("  FAIL: lgbm_tb_v2.pkl missing")
+        all_ok = False
+    else:
+        try:
+            with open(lgbm_path, "rb") as f:
+                lgbm = pickle.load(f)
+            try:
+                proba = lgbm.predict_proba(X_scaled)[:, 1]
+                print(f"  OK: lgbm predicts {proba[:3].round(3)}...")
+            except Exception as e:
+                print(f"  FAIL: lgbm failed: {e}")
+                all_ok = False
+        except ImportError as e:
+            print(f"  DEPENDENCY FAIL: lightgbm not installed ({e})")
+            print("  Install with: pip install lightgbm")
+            all_ok = False
+        except Exception as e:
+            print(f"  FAIL: lgbm load error: {e}")
             all_ok = False
 
     return all_ok
 
 
 def check_backtest():
-    """Check backtest results."""
-    print("\n[5] Backtest checks")
+    """Check v2 backtest results."""
+    print("\n[5] Backtest checks (v2)")
 
-    path = os.path.join(RESULTS_DIR, "backtest_tb.json")
+    path = os.path.join(RESULTS_DIR, "backtest_tb_v2.json")
     if not os.path.exists(path):
-        print("  MISSING: backtest results")
+        print("  MISSING: backtest_tb_v2.json")
         return False
 
     with open(path) as f:
         results = json.load(f)
 
-    overall = results.get("overall", {})
-    print(f"  AUC: {overall.get('auc', 'N/A')}")
-    print(f"  Brier: {overall.get('brier', 'N/A')}")
-    print(f"  Base rate: {overall.get('base_rate', 'N/A')}")
-    print(f"  Models: {results.get('models_used', [])}")
+    models = results.get("models", {})
+    if not models:
+        print("  FAIL: No model results in backtest")
+        return False
+
+    for model_name, metrics in models.items():
+        auc = metrics.get("auc", "N/A")
+        brier = metrics.get("brier", "N/A")
+        print(f"  {model_name:12s}: AUC={auc}, Brier={brier}")
+
+    rank_metrics = results.get("rank_metrics", {})
+    if rank_metrics:
+        for tier, vals in rank_metrics.items():
+            rate = vals.get("rate", "N/A")
+            lift = vals.get("lift", "N/A")
+            n = vals.get("n", "N/A")
+            print(f"  {tier:12s}: rate={rate}, lift={lift}, n={n}")
 
     return True
 
 
 def main():
     print("=" * 60)
-    print("Sanity Check — 2+ TB Model")
+    print("Sanity Check — v2 2+ TB Model (34 features)")
     print("=" * 60)
 
     checks = [
