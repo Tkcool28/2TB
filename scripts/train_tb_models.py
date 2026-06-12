@@ -73,6 +73,8 @@ def prep(data, feature_cols):
         x = [row.get(f, 0) for f in feature_cols]
         X.append(x)
         y.append(row["target_2tb"])
+    if not X:
+        return np.array([]).reshape(0, len(feature_cols)), np.array([])
     return np.array(X), np.array(y)
 
 
@@ -130,8 +132,8 @@ def main():
     # Scale features
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val) if X_val is not None else None
-    X_hold_scaled = scaler.transform(X_hold) if X_hold is not None else None
+    X_val_scaled = scaler.transform(X_val) if X_val is not None and len(X_val) > 0 else None
+    X_hold_scaled = scaler.transform(X_hold) if X_hold is not None and len(X_hold) > 0 else None
 
     results = {}
 
@@ -152,9 +154,9 @@ def main():
 
     results["logreg"] = {}
     results["logreg"]["train"] = evaluate_model(logreg_cal, X_train_scaled, y_train, "Train")
-    if X_val_scaled is not None:
+    if X_val_scaled is not None and len(y_val) > 0:
         results["logreg"]["validate"] = evaluate_model(logreg_cal, X_val_scaled, y_val, "Validate")
-    if X_hold_scaled is not None:
+    if X_hold_scaled is not None and len(y_hold) > 0:
         results["logreg"]["holdout"] = evaluate_model(logreg_cal, X_hold_scaled, y_hold, "Holdout")
 
     # Feature importance (coefficients)
@@ -193,7 +195,7 @@ def main():
         )
 
         eval_set = [(X_train_scaled, y_train)]
-        if X_val_scaled is not None:
+        if X_val_scaled is not None and len(y_val) > 0:
             eval_set.append((X_val_scaled, y_val))
 
         xgb.fit(
@@ -204,9 +206,9 @@ def main():
 
         results["xgb"] = {}
         results["xgb"]["train"] = evaluate_model(xgb, X_train_scaled, y_train, "Train")
-        if X_val_scaled is not None:
+        if X_val_scaled is not None and len(y_val) > 0:
             results["xgb"]["validate"] = evaluate_model(xgb, X_val_scaled, y_val, "Validate")
-        if X_hold_scaled is not None:
+        if X_hold_scaled is not None and len(y_hold) > 0:
             results["xgb"]["holdout"] = evaluate_model(xgb, X_hold_scaled, y_hold, "Holdout")
 
         # Feature importance

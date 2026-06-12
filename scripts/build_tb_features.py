@@ -124,22 +124,45 @@ PARK_FACTORS = {
 
 
 def load_game_logs():
-    """Load all game logs from zip files."""
+    """Load game logs — combines old limited logs with new full boxscore logs."""
     all_logs = []
+
+    # Load new full game logs (boxscores) — these have ALL players
     for year in [2022, 2023, 2024, 2025]:
-        zip_path = os.path.join(RAW_DIR, f"game_logs_{year}.zip")
-        if not os.path.exists(zip_path):
-            continue
-        with zipfile.ZipFile(zip_path) as zf:
-            data = json.loads(zf.read(zf.namelist()[0]))
-        for row in data:
-            row["_year"] = year
-            # Compute total bases
-            singles = row["hits"] - row["doubles"] - row["triples"] - row["home_runs"]
-            row["total_bases"] = singles + 2 * row["doubles"] + 3 * row["triples"] + 4 * row["home_runs"]
-            row["target_2tb"] = 1 if row["total_bases"] >= 2 else 0
-        all_logs.extend(data)
-    print(f"  Loaded {len(all_logs)} game log rows")
+        path = os.path.join(RAW_DIR, f"full_game_logs_{year}.json")
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.load(f)
+            for row in data:
+                row["_year"] = year
+                row["total_bases"] = (
+                    (row["hits"] - row["doubles"] - row["triples"] - row["home_runs"])
+                    + 2 * row["doubles"]
+                    + 3 * row["triples"]
+                    + 4 * row["home_runs"]
+                )
+                row["target_2tb"] = 1 if row["total_bases"] >= 2 else 0
+            all_logs.extend(data)
+            print(f"  Loaded full_game_logs_{year}.json: {len(data)} rows")
+
+    # If no full game logs exist yet, fall back to old limited logs
+    if not all_logs:
+        print("  WARNING: No full game logs found — falling back to limited game logs")
+        for year in [2022, 2023, 2024, 2025]:
+            zip_path = os.path.join(RAW_DIR, f"game_logs_{year}.zip")
+            if not os.path.exists(zip_path):
+                continue
+            with zipfile.ZipFile(zip_path) as zf:
+                data = json.loads(zf.read(zf.namelist()[0]))
+            for row in data:
+                row["_year"] = year
+                singles = row["hits"] - row["doubles"] - row["triples"] - row["home_runs"]
+                row["total_bases"] = singles + 2 * row["doubles"] + 3 * row["triples"] + 4 * row["home_runs"]
+                row["target_2tb"] = 1 if row["total_bases"] >= 2 else 0
+            all_logs.extend(data)
+        print(f"  Loaded {len(all_logs)} game log rows (limited)")
+
+    print(f"  Total game log rows: {len(all_logs)}")
     return all_logs
 
 
@@ -193,18 +216,6 @@ def load_pitcher_basics():
                 pitcher_basic[(year, int(pid))] = row
     print(f"  Pitcher basics: {len(pitcher_basic)} entries")
     return pitcher_basic
-
-
-def load_historical_lineups():
-    """Load historical lineup positions."""
-    path = os.path.join(RAW_DIR, "historical_lineups.json")
-    if not os.path.exists(path):
-        print("  WARNING: historical_lineups.json not found — lineup_position will default to 5")
-        return {}
-    with open(path) as f:
-        data = json.load(f)
-    print(f"  Historical lineups: {len(data)} games")
-    return data
 
 
 def load_opp_pitcher_lookup(year):
@@ -324,18 +335,6 @@ def compute_rolling_stats(player_games, target_date):
     }
 
 
-def get_lineup_position(lineups, game_pk, date, team, player_id):
-    """Get lineup position for a player in a game."""
-    key = f"{date}_{game_pk}"
-    if key not in lineups:
-        return 5  # default
-    game = lineups[key]
-    # Determine if player is on home or away team
-    for side in ["home_lineup", "away_lineup"]:
-        if str(player_id) in game.get(side, {}):
-            return game[side][str(player_id)]
-    return 5  # default
-
 
 def get_pitcher_hand(pitcher_basic, year, pitcher_id):
     """Get pitcher throwing hand."""
@@ -370,7 +369,6 @@ def main():
     game_logs = load_game_logs()
     batter_sc, pitcher_sc = load_statcast()
     pitcher_basic = load_pitcher_basics()
-    lineups = load_historical_lineups()
 
     # Build opponent pitcher lookups
     opp_pitcher = {}
@@ -381,7 +379,7 @@ def main():
     # Group game logs by player
     player_games = defaultdict(list)
     for row in game_logs:
-        player_games[row["player_id"]].append(row)
+        player_games[int(row["player_id"])].append(row)
 
     # Sort each player's games by date
     for pid in player_games:
@@ -393,11 +391,11 @@ def main():
     skipped = 0
 
     for row in game_logs:
-        pid = row["player_id"]
+        pid = int(row["player_id"])
         date = row["date"]
         year = row["_year"]
-        opp = row["opponent"]
         team = row["team"]
+        opp = row["opponent"]
         is_home = 1 if row.get("home_away") == "home" else 0
 
         # Rolling stats (from prior games only)
@@ -412,7 +410,7 @@ def main():
         psc = pitcher_sc.get((sc_year, opp_pid), {}) if opp_pid else {}
         pb = pitcher_basic.get((sc_year, opp_pid), {}) if opp_pid else {}
 
-        # Platoon advantage
+        # Batter hand
         batter_hand = row.get("bats", "R")
         pitcher_hand = get_pitcher_hand(pitcher_basic, sc_year, opp_pid) if opp_pid else "R"
         platoon = 1 if (batter_hand == "L" and pitcher_hand == "R") or \
@@ -424,12 +422,10 @@ def main():
         # Park factor
         park = PARK_FACTORS.get(opp if is_home else team, 1.0)
 
-        # Lineup position (from historical lineups)
-        lineup_pos = 5  # default
-        if lineups:
-            # Find game_pk for this date
-            # We need to look it up from schedule
-            lineup_pos = 5  # Will be populated if we have the game_pk
+        # Lineup position — from boxscore batting_order (1-9)
+        lineup_pos = int(row.get("batting_order", 5) or 5)
+        if lineup_pos < 1 or lineup_pos > 9:
+            lineup_pos = 5
 
         # Build feature vector
         feature_row = {
@@ -484,10 +480,11 @@ def main():
 
     print(f"  Built {len(all_rows)} feature rows")
 
-    # Split by year
+    # Split by year: 2022-23 train, 2024 val, 2025 holdout
+    # For now, use 2022-23 as train, 2024 as val (no 2025 full data yet)
     train = [r for r in all_rows if r["year"] <= 2023]
     val = [r for r in all_rows if r["year"] == 2024]
-    holdout = [r for r in all_rows if r["year"] == 2025]
+    holdout = [r for r in all_rows if r["year"] == 2025]  # empty until we pull 2025
 
     print(f"  Train: {len(train)} rows (2022-23)")
     print(f"  Validate: {len(val)} rows (2024)")
