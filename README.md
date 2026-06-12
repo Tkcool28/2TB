@@ -13,6 +13,12 @@ The v2 stack uses **34 features** (deduped from the old 48-feature v1 schema) an
 
 All models expect the same 34-feature vector. The **exact feature order** is defined in `data/processed/train_tb_v2.json` and validated by `scripts/sanity_check_tb.py`.
 
+## v2 Performance Metrics
+
+- **Ensemble AUC:** 0.5955
+- **Top-1 Hit Rate:** 49.15%
+- **Holdout Size:** 60,653 games (from 2025 season)
+
 ## v2 artifacts
 
 | File | Purpose |
@@ -35,9 +41,9 @@ All models expect the same 34-feature vector. The **exact feature order** is def
 
 ## Data
 
-- Game logs: 2022–2025
-- Statcast (batters & pitchers): 2022–2025
-- Historical lineups: pulled from MLB Stats API v1.1
+- **Game logs & Statcast:** 2022–2025
+- **Location:** Raw and processed data reside on the VPS (not hosted on GitHub).
+- **Historical lineups:** pulled from MLB Stats API v1.1
 
 ## Live predictions
 

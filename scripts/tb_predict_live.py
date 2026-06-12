@@ -19,6 +19,8 @@ Usage:
 """
 
 import argparse
+import pandas as pd
+import lightgbm
 import json
 import os
 import pickle
@@ -1101,15 +1103,18 @@ def main():
                 probas = []
                 failed_models = []
                 for name, model in models.items():
-                    try:
-                        # LightGBM was fitted with feature names; pass a DataFrame to
-                        # suppress "X does not have valid feature names" warning.
-                        # Other models (sklearn, xgboost) were fitted on bare numpy, so
-                        # pass numpy to avoid the inverse sklearn warning.
-                        X_model = pd.DataFrame(X_scaled, columns=FEATURES) if name == "lgbm" else X_scaled
-                        p = model.predict_proba(X_model)[0, 1]
-                        probas.append(p)
-                    except Exception as e:
+                        try:
+                            if name == "lgbm":
+                                import lightgbm
+                                X_model = pd.DataFrame(X_scaled, columns=FEATURES)
+                            else:
+                                X_model = X_scaled
+                            p = model.predict_proba(X_model)[0, 1]
+                            probas.append(p)
+                        except ImportError:
+                            print("ERROR: LightGBM is required for the ensemble. Please run: pip install lightgbm")
+                            raise SystemExit(1)
+                        except Exception as e:
                         failed_models.append((name, str(e)))
 
                 if failed_models:
