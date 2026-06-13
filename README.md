@@ -64,9 +64,63 @@ python3 scripts/tb_predict_live.py
 python3 scripts/backtest_tb_v2.py
 ```
 
+## Daily Automation Schedule
+
+The 2TB pipeline is designed to run autonomously via cron on the VPS.
+
+### One‑command wrapper
+
+```bash
+bash scripts/run_daily_2tb_workflow.sh
+```
+
+This calls `run_daily_predictions.py` (predictions) then `grade_predictions.py --all-ungraded` (grading).  Dates use **America/Denver** timezone.  All output is logged under `logs/prediction_runs/` and `logs/grading_runs/`.
+
+### Suggested cron entries
+
+Install from the repo root (`/root/2tb-model`).  **Do not install from this README alone** — verify paths match your deployment.
+
+```cron
+# 11:00 AM Denver time — generate today's predictions + grade any ungraded dates
+0 11 * * *  cd /root/2tb-model && bash scripts/run_daily_2tb_workflow.sh >> /root/2tb-model/logs/prediction_runs/$(TZ=America/Denver date +\%Y\%m\%d).log 2>&1
+
+# 02:00 AM Denver time — safety-net grader for yesterday
+0 2 * * *  cd /root/2tb-model && /root/2tb-model/.venv/bin/python3 scripts/grade_predictions.py --date "$(TZ=America/Denver date -d 'yesterday' +\%Y-\%m-\%d)" >> /root/2tb-model/logs/grading_runs/$(TZ=America/Denver date +\%Y\%m\%d).log 2>&1
+```
+
+### Failure handling
+
+* `set -euo pipefail` ensures no step silently fails.
+* Non‑zero exit codes are propagated to cron (cron will email/log on failure).
+* Each step writes to a dated log file for post‑mortem.
+* Prediction step skips if output already exists (safe to re‑run).
+* Grading step uses `--all-ungraded` to retry any dates that weren't graded yet.
+
+---
+
 ## Dashboard
 
 Live at: https://totals.tkhermes.duckdns.org
+
+The dashboard **reads saved files only** — it never calls model inference.  It expects:
+  * `predictions/<year>/<YYYYMMDD>_predictions.csv`
+  * `predictions/<year>/<YYYYMMDD>_summary.json`
+  * `results/<year>/<YYYYMMDD>_results_summary.json`
+
+### Player names
+
+The current prediction CSV schema includes `player_id` but **not** `player_name`.  Names are shown automatically if the column is present (upstream change required to add it — join via MLB Stats API or local lookup table).
+
+### Performance aggregation
+
+* **Hit Rate** = `sum(total_hits_2tb) / sum(graded_predictions)` (weighted, not averaged).
+* **Top‑10 / Top‑20 HR** = average of daily rates (per‑day eligible‑row counts are not available in the current summary schema).
+
+### Dashboard tests
+
+```bash
+pytest tests/test_dashboard.py -q
+```
 
 ## Daily Prediction Runner
 
