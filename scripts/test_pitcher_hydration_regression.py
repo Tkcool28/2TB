@@ -175,7 +175,9 @@ for i, (rc, sc) in enumerate(zip(pitcher_recent_calls, pitcher_rest_calls)):
 # the result matches what you get from prior-only rows.
 # We re-compute from the cache file directly.
 cache_path = os.path.join(REPO_ROOT, "data", "raw", "gamelogs_2025_pitching.json")
-if os.path.exists(cache_path):
+if not os.path.exists(cache_path):
+    failures.append("FAIL: Cannot find gamelogs_2025_pitching.json for leakage check")
+else:
     with open(cache_path) as f:
         cache_data = json.load(f)
 
@@ -229,8 +231,6 @@ if os.path.exists(cache_path):
 
     if not leakage_found:
         print(f"[PASS] No same-day leakage: compute_* functions correctly filter date < {TARGET_DATE}")
-else:
-    failures.append("FAIL: Cannot find gamelogs_2025_pitching.json for leakage check")
 
 # ── Summary ────────────────────────────────────────────────────────────────
 print("=" * 60)
