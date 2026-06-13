@@ -67,3 +67,36 @@ python3 scripts/backtest_tb_v2.py
 ## Dashboard
 
 Live at: https://totals.tkhermes.duckdns.org
+
+## Daily Prediction Runner
+
+The frozen 2TB model stack can now be invoked daily to generate player‑level hit predictions.
+
+### Usage
+```bash
+# Run predictions for today (default)
+python scripts/run_daily_predictions.py
+
+# Run for a specific date (back‑fill / validation)
+python scripts/run_daily_predictions.py --date 2025-06-01
+```
+
+*The script will:
+- Determine the MLB slate for the requested date.
+- Load the four frozen models (`logreg_tb_v2.pkl`, `xgb_tb_v2.pkl`, `lgbm_tb_v2.pkl`, `scaler_tb_v2.pkl`).
+- Hydrate lineup, pitcher, and player features using the existing `tb_predict_live` pipeline.
+- Produce an ensemble probability (average of the three model outputs).
+- Write a sorted CSV of all predictions and a JSON summary.
+
+### Output locations
+- **Predictions CSV**: `predictions/<year>/<YYYY‑MM‑DD>_predictions.csv`
+- **Summary JSON**: `predictions/<year>/<YYYY‑MM‑DD>_summary.json`
+- **Run log**: `logs/prediction_runs/<YYYY‑MM‑DD>.log`
+
+All files are version‑stable — the script never overwrites an existing file; it aborts with a clear error if a file for the same date already exists.
+
+### Notes
+- No model retraining or feature changes are performed — the pipeline is read‑only with respect to the 34‑feature schema.
+- The script can be scheduled with `cron` or any task runner to run automatically each day.
+
+---
