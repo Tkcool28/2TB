@@ -293,6 +293,16 @@ def main():
         with open(json_path, "w") as f:
             json.dump(summary, f, indent=2)
 
+        # Also write live_predictions.json for the dashboard (list of predictions)
+        live_path = os.path.join(os.path.dirname(__file__), "..", "results", "live_predictions.json")
+        try:
+            os.makedirs(os.path.dirname(live_path), exist_ok=True)
+            with open(live_path, "w") as f:
+                json.dump(all_predictions, f, indent=2)
+            logging.info(f"Wrote live predictions JSON for dashboard: {live_path}")
+        except Exception as e:
+            logging.error(f"Failed to write live predictions JSON: {e}")
+
         logging.info(
             f"Pipeline completed successfully in {pipeline_runtime_seconds:.2f} seconds. "
             f"Games: {total_games}, Players: {total_players}, Top probability: {top_probability:.4f}"
