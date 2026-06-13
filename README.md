@@ -99,4 +99,70 @@ All files are version‑stable — the script never overwrites an existing file;
 - No model retraining or feature changes are performed — the pipeline is read‑only with respect to the 34‑feature schema.
 - The script can be scheduled with `cron` or any task runner to run automatically each day.
 
+## Prediction Grader
+
+The grader compares archived daily predictions against actual game outcomes and produces per-player results plus summary metrics.
+
+### Usage
+
+```bash
+# Grade a specific date
+python scripts/grade_predictions.py --date 2025-06-01
+
+# Grade all dates that have predictions but no results yet
+python scripts/grade_predictions.py --all-ungraded
+```
+
+### Expected input files
+
+| File | Description |
+|------|-------------|
+| `predictions/<YYYY>/<YYYYMMDD>_predictions.csv` | Output from `run_daily_predictions.py` |
+| `data/raw/full_game_logs_<YYYY>.json` | Cached game logs (one per year) |
+
+### Output files
+
+| File | Description |
+|------|-------------|
+| `results/<YYYY>/<YYYYMMDD>_results.csv` | Graded results per player |
+| `results/<YYYY>/<YYYYMMDD>_results_summary.json` | Summary metrics |
+| `logs/grading_runs/<YYYYMMDD>.log` | Run log |
+
+### Results CSV columns (added to original prediction fields)
+
+| Column | Description |
+|--------|-------------|
+| `actual_total_bases` | Computed total bases |
+| `actual_hits` | Hits |
+| `actual_doubles` | Doubles |
+| `actual_triples` | Triples |
+| `actual_home_runs` | Home runs |
+| `hit_2tb` | True if actual_total_bases >= 2 |
+| `grading_status` | `graded` or `ungraded` |
+| `unmatched_reason` | Reason if ungraded |
+| `graded_timestamp` | ISO timestamp |
+
+### Missing-data behavior
+
+- **Player not found in game logs**: row is marked `grading_status="ungraded"`, `hit_2tb` is blank, actual stat fields are blank. Excluded from hit-rate metrics.
+- **Game-log file missing for the year**: all rows for that date are marked ungraded. No fake zeros.
+- **Unparseable player_id**: row is marked ungraded with reason `"unparseable player_id"`.
+
+Summary metrics (`hit_rate`, `top_10_hit_rate`, `top_20_hit_rate`) are computed using **only graded rows**. Ungraded rows are excluded entirely.
+
+### Data source
+
+The grader reads `data/raw/full_game_logs_<YYYY>.json` (the same cached game logs used by the training pipeline). Each row contains `player_id`, `hits`, `doubles`, `triples`, `home_runs`, and `date`. Total bases are computed as:
+
+```
+TB = (hits - doubles - triples - HR) + 2*doubles + 3*triples + 4*HR
+   = hits + doubles + 2*triples + 3*home_runs
+```
+
+### Tests
+
+```bash
+pytest tests/test_grade_predictions.py -q
+```
+
 ---
