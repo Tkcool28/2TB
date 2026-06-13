@@ -14,16 +14,15 @@ Usage:
     streamlit run dashboard/app.py
 """
 
-import csv
 import json
-import os
-import glob
-from datetime import datetime, timedelta
+import logging
+import warnings
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -32,60 +31,100 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PRED_DIR  = REPO_ROOT / "predictions"
 RESULT_DIR = REPO_ROOT / "results"
 
+MT = ZoneInfo("America/Denver")
+
+# Module-level logger for data-loader warnings shown in the UI
+_log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
-# Data loaders
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+def _today_denver() -> str:
+    """Return today's date string in America/Denver timezone."""
+    return datetime.now(MT).strftime("%Y-%m-%d")
+
 
 def _date_compact(d: str) -> str:
     return d.replace("-", "")
 
 
+def _collect_warning(container: list, path: Path, error: Exception):
+    """Record a warning about a corrupt/unreadable file."""
+    msg = f"{path}: {error}"
+    container.append(msg)
+    warnings.warn(msg, stacklevel=2)
+    _log.warning(msg)
+
+
+# ---------------------------------------------------------------------------
+# Data loaders
+# ---------------------------------------------------------------------------
+
 @st.cache_data(ttl=300)
-def load_todays_predictions(date_str: str | None = None) -> pd.DataFrame:
-    """Load predictions CSV for a given date. Defaults to today."""
+def load_todays_predictions(date_str: str | None = None) -> tuple[pd.DataFrame, list[str]]:
+    """Load predictions CSV for a given date.
+
+    Returns (df, warnings_list).  Defaults to the newest available date.
+    """
+    warn: list[str] = []
     if date_str is None:
-        date_str = _today()
+        date_str = _today_denver()
     year = date_str[:4]
     compact = _date_compact(date_str)
     csv_path = PRED_DIR / year / f"{compact}_predictions.csv"
     if not csv_path.is_file():
-        return pd.DataFrame()
-    return pd.read_csv(csv_path)
+        return pd.DataFrame(), warn
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as e:
+        _collect_warning(warn, csv_path, e)
+        return pd.DataFrame(), warn
+    return df, warn
 
 
 @st.cache_data(ttl=300)
-def load_todays_summary(date_str: str | None = None) -> dict:
-    """Load prediction summary JSON for a given date."""
+def load_todays_summary(date_str: str | None = None) -> tuple[dict, list[str]]:
+    """Load prediction summary JSON for a given date.
+
+    Returns (summary_dict, warnings_list).
+    """
+    warn: list[str] = []
     if date_str is None:
-        date_str = _today()
+        date_str = _today_denver()
     year = date_str[:4]
     compact = _date_compact(date_str)
     json_path = PRED_DIR / year / f"{compact}_summary.json"
     if not json_path.is_file():
-        return {}
-    with open(json_path) as f:
-        return json.load(f)
+        return {}, warn
+    try:
+        with open(json_path) as f:
+            data = json.load(f)
+        return data, warn
+    except Exception as e:
+        _collect_warning(warn, json_path, e)
+        return {}, warn
 
 
 @st.cache_data(ttl=300)
-def load_all_result_summaries() -> pd.DataFrame:
-    """Load every results_summary.json into a DataFrame keyed by date."""
-    rows = []
+def load_all_result_summaries() -> tuple[pd.DataFrame, list[str]]:
+    """Load every results_summary.json into a DataFrame keyed by date.
+
+    Returns (df, warnings_list).  Malformed files are skipped with warnings.
+    """
+    rows: list[dict] = []
+    warn: list[str] = []
     for path in sorted(RESULT_DIR.rglob("*_results_summary.json")):
         try:
             with open(path) as f:
                 data = json.load(f)
             data["_file"] = str(path)
             rows.append(data)
-        except Exception:
-            continue
+        except Exception as e:
+            _collect_warning(warn, Path(path), e)
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(), warn
     df = pd.DataFrame(rows)
-    # Normalise column names
     col_map = {
         "game_date": "date",
         "total_predictions": "total",
@@ -101,7 +140,59 @@ def load_all_result_summaries() -> pd.DataFrame:
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.sort_values("date").reset_index(drop=True)
-    return df
+    return df, warn
+
+
+def discover_prediction_dates() -> list[str]:
+    """Return sorted list of available prediction date strings (YYYY-MM-DD)."""
+    dates: list[str] = []
+    for csv_file in sorted(PRED_DIR.rglob("*_predictions.csv")):
+        stem = csv_file.stem  # "20250601_predictions"
+        compact = stem.replace("_predictions", "")
+        if len(compact) == 8 and compact.isdigit():
+            dates.append(f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}")
+    return dates
+
+
+# ---------------------------------------------------------------------------
+# Aggregation helpers
+# ---------------------------------------------------------------------------
+
+def _weighted_agg(window: pd.DataFrame) -> dict:
+    """Compute weighted performance metrics for a window of result summaries.
+
+    Hit rate = sum(hits_2tb) / sum(graded_predictions)  — weighted, not averaged.
+    Top-10/20: averaged over daily rates (no numerator/denominator available).
+    """
+    if window.empty:
+        return {}
+    graded = window["graded"].sum() if "graded" in window.columns else 0
+    hits  = window["hits_2tb"].sum() if "hits_2tb" in window.columns else 0
+
+    row: dict = {
+        "Days Tracked": len(window),
+        "Total Graded": int(graded),
+    }
+
+    # Weighted hit rate
+    if graded:
+        row["Hit Rate"] = hits / graded
+    else:
+        row["Hit Rate"] = None
+
+    # Top-10 / Top-20: we only have daily rates, not per-day eligible-row counts,
+    # so we report the average of daily rates and label them accordingly.
+    if "top10_hr" in window.columns and not window["top10_hr"].isna().all():
+        row["Avg Top-10 HR"] = window["top10_hr"].mean()
+    else:
+        row["Avg Top-10 HR"] = None
+
+    if "top20_hr" in window.columns and not window["top20_hr"].isna().all():
+        row["Avg Top-20 HR"] = window["top20_hr"].mean()
+    else:
+        row["Avg Top-20 HR"] = None
+
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -127,26 +218,39 @@ def main():
     # ------------------------------------------------------------------
     st.sidebar.header("⚙️ Settings")
 
-    # Discover available prediction dates
-    pred_dates: list[str] = []
-    for csv_file in sorted(PRED_DIR.rglob("*_predictions.csv")):
-        stem = csv_file.stem  # "20250601_predictions"
-        compact = stem.replace("_predictions", "")
-        if len(compact) == 8 and compact.isdigit():
-            pred_dates.append(f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}")
+    pred_dates = discover_prediction_dates()
+
+    # Default: newest available date (not necessarily today)
+    default_date = pred_dates[-1] if pred_dates else _today_denver()
 
     selected_date = st.sidebar.selectbox(
         "Prediction date",
-        options=pred_dates if pred_dates else [_today()],
+        options=pred_dates if pred_dates else [_today_denver()],
         index=len(pred_dates) - 1 if pred_dates else 0,
     )
 
     # ------------------------------------------------------------------
     # Load data
     # ------------------------------------------------------------------
-    pred_df   = load_todays_predictions(selected_date)
-    pred_sum  = load_todays_summary(selected_date)
-    results_df = load_all_result_summaries()
+    all_warnings: list[str] = []
+
+    pred_df, w1 = load_todays_predictions(selected_date)
+    all_warnings.extend(w1)
+
+    pred_sum, w2 = load_todays_summary(selected_date)
+    all_warnings.extend(w2)
+
+    results_df, w3 = load_all_result_summaries()
+    all_warnings.extend(w3)
+
+    # Show file-level warnings in sidebar
+    if all_warnings:
+        st.sidebar.warning("Data warnings detected — see footer for details.")
+
+    # ------------------------------------------------------------------
+    # Detect player_name column
+    # ------------------------------------------------------------------
+    has_player_name = "player_name" in pred_df.columns if not pred_df.empty else False
 
     # ------------------------------------------------------------------
     # Tab layout
@@ -176,8 +280,11 @@ def main():
             )
             c4.metric("Avg Models", f"{top_pred.get('model_count', '—')}")
             if top_pred:
+                name_str = ""
+                if top_pred.get("player_name"):
+                    name_str = f" ({top_pred['player_name']})"
                 st.markdown(
-                    f"**Best pick:** Player {top_pred.get('player_id', '?')} "
+                    f"**Best pick:** Player {top_pred.get('player_id', '?')}{name_str} "
                     f"({top_pred.get('team', '?')}) — "
                     f"vs {top_pred.get('opponent', '?')} "
                     f"batting #{top_pred.get('lineup_position', '?')}"
@@ -191,14 +298,20 @@ def main():
             pred_df.index += 1  # 1-based ranking
             pred_df.index.name = "Rank"
 
-            display_cols = [
-                "player_id", "team", "opponent", "lineup_position",
-                "is_home", "predicted_proba_2tb", "model_count"
-            ]
+            # Build display columns — player_name first if available
+            base_cols = ["player_id", "team", "opponent", "lineup_position",
+                         "is_home", "predicted_proba_2tb", "model_count"]
+            if has_player_name:
+                # Insert player_name right after Rank (i.e. first)
+                display_cols = ["player_name"] + base_cols
+            else:
+                display_cols = base_cols
+
             avail_cols = [c for c in display_cols if c in pred_df.columns]
             disp = pred_df[avail_cols].copy()
 
             rename_map = {
+                "player_name": "Player",
                 "player_id": "Player ID",
                 "team": "Team",
                 "opponent": "Opp",
@@ -217,23 +330,34 @@ def main():
                 disp["Home"] = disp["Home"].map({1: "✅", 0: "❌"})
 
             # Bar chart of top 20
-            if "P(2+ TB)" in pred_df.columns:
-                chart_df = pred_df.head(20).copy()
+            chart_df = pred_df.head(20).copy()
+            if has_player_name:
+                chart_df["label"] = chart_df["player_name"].astype(str)
+            else:
                 chart_df["label"] = (
                     chart_df.get("team", "").astype(str)
                     + " #"
                     + chart_df.get("lineup_position", "").astype(str)
                 )
-                st.bar_chart(
-                    chart_df.set_index("label")["predicted_proba_2tb"],
-                    use_container_width=True,
-                )
+            st.bar_chart(
+                chart_df.set_index("label")["predicted_proba_2tb"],
+                use_container_width=True,
+            )
 
             st.dataframe(disp, use_container_width=True, height=500)
 
             # Download
             csv_data = pred_df.to_csv(index=True)
             st.download_button("Download CSV", csv_data, f"{selected_date}_predictions.csv")
+
+        # Player name limitation note
+        if not has_player_name and not pred_df.empty:
+            st.info(
+                "💡 **Player names not shown** — the current prediction CSV schema does not "
+                "include a `player_name` column. To add names, the upstream prediction runner "
+                "(`scripts/run_daily_predictions.py`) would need to join player IDs to names "
+                "via the MLB Stats API `/people/{id}` endpoint or a local lookup table."
+            )
 
     # ================================================================
     # TAB 2 — Latest Results
@@ -250,7 +374,8 @@ def main():
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Predictions", latest.get("total", "—"))
             c2.metric("Graded", latest.get("graded", "—"))
-            c3.metric("Hit Rate", f"{latest['hit_rate']:.1%}" if pd.notna(latest.get('hit_rate')) else "—")
+            hr = latest.get("hit_rate")
+            c3.metric("Hit Rate", f"{hr:.1%}" if pd.notna(hr) else "—")
             top10 = latest.get("top10_hr")
             c4.metric("Top-10 Hit Rate", f"{top10:.1%}" if pd.notna(top10) else "—")
 
@@ -283,29 +408,31 @@ def main():
             w7  = _window(7)
             w30 = _window(30)
 
-            def _agg(window: pd.DataFrame) -> dict:
-                if window.empty:
-                    return {}
-                graded = window["graded"].sum() if "graded" in window.columns else 0
-                hits  = window["hits_2tb"].sum() if "hits_2tb" in window.columns else 0
-                return {
-                    "Days Tracked": len(window),
-                    "Total Graded": int(graded),
-                    "Hit Rate": f"{hits / graded:.2%}" if graded else "—",
-                    "Avg Top-10 HR": f"{window['top10_hr'].mean():.2%}" if "top10_hr" in window.columns and not window["top10_hr"].isna().all() else "—",
-                    "Avg Top-20 HR": f"{window['top20_hr'].mean():.2%}" if "top20_hr" in window.columns and not window["top20_hr"].isna().all() else "—",
-                }
-
             summary_rows = []
             for label, w in [("Last 7 Days", w7), ("Last 30 Days", w30), ("Overall", results_df)]:
-                row = _agg(window=w)
+                row = _weighted_agg(window=w)
                 if row:
                     row["Period"] = label
                     summary_rows.append(row)
 
             if summary_rows:
                 summary_df = pd.DataFrame(summary_rows).set_index("Period")
-                st.table(summary_df)
+
+                # Format for display
+                display_summary = summary_df.copy()
+                for col in ("Hit Rate", "Avg Top-10 HR", "Avg Top-20 HR"):
+                    if col in display_summary.columns:
+                        display_summary[col] = display_summary[col].apply(
+                            lambda x: f"{x:.1%}" if pd.notna(x) else "—"
+                        )
+                st.table(display_summary)
+
+            # Note about Top-10/20 aggregation
+            st.caption(
+                "💡 **Hit Rate** is weighted: sum(hits) / sum(graded). "
+                "**Top-10 / Top-20 HR** are averages of daily rates (per-day "
+                "eligible-row counts are not available in the current summary schema)."
+            )
 
             # Line chart of hit rate over time
             chart_cols = ["date"]
@@ -326,7 +453,14 @@ def main():
     # Footer
     # ------------------------------------------------------------------
     st.markdown("---")
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # Show data warnings in footer
+    if all_warnings:
+        st.subheader("⚠️ Data Warnings")
+        for w in all_warnings:
+            st.warning(w)
+
+    now_str = datetime.now(MT).strftime("%Y-%m-%d %H:%M %Z")
     st.caption(
         f"2TB Model Dashboard v2 | LogReg + XGBoost + LightGBM ensemble | "
         f"Updated: {now_str}"
