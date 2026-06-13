@@ -723,7 +723,7 @@ def fetch_game_lineups(game_pk, date_str=None, offline=False):
                     "batter_hands": entry.get("batter_hands", {}),
                 }
             else:
-                print(f"  [DEBUG] Lineup missing for key: {key}")
+                pass  # lineup not found for this key
         # Try direct game_pk
         str_pk = str(game_pk)
         if str_pk in all_lineups:
