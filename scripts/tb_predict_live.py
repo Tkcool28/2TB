@@ -722,6 +722,8 @@ def fetch_game_lineups(game_pk, date_str=None, offline=False):
                     "away": entry.get("away_lineup", {}),
                     "batter_hands": entry.get("batter_hands", {}),
                 }
+            else:
+                print(f"  [DEBUG] Lineup missing for key: {key}")
         # Try direct game_pk
         str_pk = str(game_pk)
         if str_pk in all_lineups:
@@ -997,67 +999,136 @@ def main():
     print(f"  Pitcher basics: {len(pitcher_basics)} entries")
 
     # ── Optionally fetch current-season gamelogs from MLB API ──
-    if not args.offline and not args.skip_gamelog_fetch:
-        # Collect all player IDs from lineups and pitcher IDs
-        all_batter_ids = set()
-        all_pitcher_ids = set()
-        for game in games:
-            for side in ["home", "away"]:
-                lineup = game.get(f"{side}_lineup", {})
-                for pid_str in lineup:
+    if not args.skip_gamelog_fetch:
+        if args.offline:
+            # Offline: load batter and pitcher gamelogs from cache for the current season
+            season = int(date_str[:4])
+
+            # --- Batters ---
+            all_batter_ids = set()
+            for game in games:
+                for side in ["home", "away"]:
+                    lineup = game.get(f"{side}_lineup", {})
+                    for pid_str in lineup:
+                        try:
+                            all_batter_ids.add(int(pid_str))
+                        except (ValueError, TypeError):
+                            pass
+            if all_batter_ids:
+                cache_path = os.path.join(args.cache_dir, f"gamelogs_{season}_hitting.json")
+                if os.path.exists(cache_path):
                     try:
-                        all_batter_ids.add(int(pid_str))
-                    except (ValueError, TypeError):
-                        pass
-                ppid = game.get(f"{side}_pitcher_id")
-                if ppid:
+                        with open(cache_path) as f:
+                            cached_rows = json.load(f)
+                    except Exception as e:
+                        print(f"  WARNING: Failed to load cached batter gamelogs: {e}")
+                    else:
+                        batter_rows = [row for row in cached_rows if int(row.get("player_id", 0)) in all_batter_ids]
+                        # Merge into local_games and rebuild player_games and team_games
+                        merged = merge_gamelog_rows(local_games, batter_rows)
+                        player_games = defaultdict(list)
+                        for row in merged:
+                            pid = row.get("player_id")
+                            if pid:
+                                player_games[int(pid)].append(row)
+                        for pid in player_games:
+                            player_games[pid].sort(key=lambda g: g.get("date", ""))
+                        team_games = defaultdict(list)
+                        for row in merged:
+                            team = row.get("team", "")
+                            if team:
+                                team_games[team].append(row)
+                        for t in team_games:
+                            team_games[t].sort(key=lambda g: g.get("date", ""))
+                        print(f"  Loaded {len(batter_rows)} cached batter gamelog rows from {cache_path}")
+
+            # --- Pitchers ---
+            all_pitcher_ids = set()
+            for game in games:
+                for side in ["home", "away"]:
+                    ppid = game.get(f"{side}_pitcher_id")
+                    if ppid:
+                        try:
+                            all_pitcher_ids.add(int(ppid))
+                        except (ValueError, TypeError):
+                            pass
+            if all_pitcher_ids:
+                cache_path = os.path.join(args.cache_dir, f"gamelogs_{season}_pitching.json")
+                if os.path.exists(cache_path):
                     try:
-                        all_pitcher_ids.add(int(ppid))
-                    except (ValueError, TypeError):
-                        pass
+                        with open(cache_path) as f:
+                            cached_rows = json.load(f)
+                    except Exception as e:
+                        print(f"  WARNING: Failed to load cached pitcher gamelogs: {e}")
+                    else:
+                        pitcher_rows = [row for row in cached_rows if int(row.get("player_id", 0)) in all_pitcher_ids]
+                        for row in pitcher_rows:
+                            pid = int(row.get("player_id", 0))
+                            pitcher_hist[pid].append(row)
+                        for pid in pitcher_hist:
+                            pitcher_hist[pid].sort(key=lambda g: g.get("date", ""))
+                        print(f"  Loaded {len(pitcher_rows)} cached pitcher gamelog rows from {cache_path}")
+        else:
+            # Online mode: use the existing block that fetches and caches
+            # Collect all player IDs from lineups and pitcher IDs
+            all_batter_ids = set()
+            all_pitcher_ids = set()
+            for game in games:
+                for side in ["home", "away"]:
+                    lineup = game.get(f"{side}_lineup", {})
+                    for pid_str in lineup:
+                        try:
+                            all_batter_ids.add(int(pid_str))
+                        except (ValueError, TypeError):
+                            pass
+                    ppid = game.get(f"{side}_pitcher_id")
+                    if ppid:
+                        try:
+                            all_pitcher_ids.add(int(ppid))
+                        except (ValueError, TypeError):
+                            pass
 
-        season = int(date_str[:4])
-        print(f"Fetching current-season gamelogs for {len(all_batter_ids)} batters...")
-        try:
-            new_batter_rows = fetch_player_gamelogs(
-                list(all_batter_ids), season, "hitting",
-                args.cache_dir, args.api_delay
-            )
-            print(f"  Fetched {len(new_batter_rows)} batter gamelog rows")
-            merged = merge_gamelog_rows(local_games, new_batter_rows)
-            # Rebuild player_games
-            for row in new_batter_rows:
-                pid = row.get("player_id")
-                if pid:
-                    player_games[int(pid)].append(row)
-            for pid in player_games:
-                player_games[pid].sort(key=lambda g: g.get("date", ""))
-            # Also update team_games so lineup_team_ops uses current-season context
-            for row in new_batter_rows:
-                team = row.get("team", "")
-                if team:
-                    team_games[team].append(row)
-            for t in team_games:
-                team_games[t].sort(key=lambda g: g.get("date", ""))
-        except Exception as e:
-            print(f"  WARNING: Batter gamelog fetch failed: {e}")
+            season = int(date_str[:4])
+            print(f"Fetching current-season gamelogs for {len(all_batter_ids)} batters...")
+            try:
+                new_batter_rows = fetch_player_gamelogs(
+                    list(all_batter_ids), season, "hitting",
+                    args.cache_dir, args.api_delay
+                )
+                print(f"  Fetched {len(new_batter_rows)} batter gamelog rows")
+                merged = merge_gamelog_rows(local_games, new_batter_rows)
+                # Rebuild player_games
+                for row in new_batter_rows:
+                    pid = row.get("player_id")
+                    if pid:
+                        player_games[int(pid)].append(row)
+                for pid in player_games:
+                    player_games[pid].sort(key=lambda g: g.get("date", ""))
+                # Also update team_games so lineup_team_ops uses current-season context
+                for row in new_batter_rows:
+                    team = row.get("team", "")
+                    if team:
+                        team_games[team].append(row)
+                for t in team_games:
+                    team_games[t].sort(key=lambda g: g.get("date", ""))
+            except Exception as e:
+                print(f"  WARNING: Batter gamelog fetch failed: {e}")
 
-        print(f"Fetching current-season gamelogs for {len(all_pitcher_ids)} pitchers...")
-        try:
-            new_pitcher_rows = fetch_player_gamelogs(
-                list(all_pitcher_ids), season, "pitching",
-                args.cache_dir, args.api_delay
-            )
-            print(f"  Fetched {len(new_pitcher_rows)} pitcher gamelog rows")
-            for row in new_pitcher_rows:
-                pid = row.get("player_id")
-                if pid:
-                    pitcher_hist[int(pid)].append(row)
-            for pid in pitcher_hist:
-                pitcher_hist[pid].sort(key=lambda g: g.get("date", ""))
-        except Exception as e:
-            print(f"  WARNING: Pitcher gamelog fetch failed: {e}")
-
+            print(f"Fetching current-season gamelogs for {len(all_pitcher_ids)} pitchers...")
+            try:
+                new_pitcher_rows = fetch_player_gamelogs(
+                    list(all_pitcher_ids), season, "pitching",
+                    args.cache_dir, args.api_delay
+                )
+                print(f"  Fetched {len(new_pitcher_rows)} pitcher gamelog rows")
+                for row in new_pitcher_rows:
+                    pid = row.get("player_id")
+                    if pid:
+                        pitcher_hist[int(pid)].append(row)
+                for pid in pitcher_hist:
+                    pitcher_hist[pid].sort(key=lambda g: g.get("date", ""))
+            except Exception as e:
+                print(f"  WARNING: Pitcher gamelog fetch failed: {e}")
     # ── Predict ──
     all_predictions = []
     pred_count = 0

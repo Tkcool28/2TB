@@ -6,3 +6,5 @@ data/
 models/
 results/
 *.log
+*.bak
+diagnose_*.py
