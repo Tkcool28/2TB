@@ -1,183 +1,336 @@
 #!/usr/bin/env python3
 """
 dashboard/app.py
-=================
-Streamlit dashboard for 2+ Total Bases predictions.
+================
+Standalone Streamlit dashboard for the 2TB model.
 
-Shows:
-  - Today's slate with P(2+ TB) for each player (lineup spots 1-5)
-  - Ranked table with color-coded probabilities
-  - Game-by-game breakdown
-  - Model confidence indicators
+Reads saved files only — does NOT call model inference.
+  - predictions/<year>/<yyyymmdd>_predictions.csv   (today's slate)
+  - predictions/<year>/<yyyymmdd>_summary.json       (today's metadata)
+  - results/<year>/<yyyymmdd>_results.csv            (graded rows)
+  - results/<year>/<yyyymmdd>_results_summary.json   (daily metrics)
 
 Usage:
-    streamlit run dashboard/app.py --server.port 8502
+    streamlit run dashboard/app.py
 """
 
+import csv
 import json
 import os
-import sys
+import glob
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-# Add parent dir to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PRED_DIR  = REPO_ROOT / "predictions"
+RESULT_DIR = REPO_ROOT / "results"
 
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "results")
-MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
+# ---------------------------------------------------------------------------
+# Data loaders
+# ---------------------------------------------------------------------------
+
+def _today() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+def _date_compact(d: str) -> str:
+    return d.replace("-", "")
 
 
 @st.cache_data(ttl=300)
-def load_predictions():
-    """Load live predictions."""
-    path = os.path.join(RESULTS_DIR, "live_predictions.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return []
+def load_todays_predictions(date_str: str | None = None) -> pd.DataFrame:
+    """Load predictions CSV for a given date. Defaults to today."""
+    if date_str is None:
+        date_str = _today()
+    year = date_str[:4]
+    compact = _date_compact(date_str)
+    csv_path = PRED_DIR / year / f"{compact}_predictions.csv"
+    if not csv_path.is_file():
+        return pd.DataFrame()
+    return pd.read_csv(csv_path)
 
 
-@st.cache_data(ttl=3600)
-def load_backtest():
-    """Load backtest results."""
-    path = os.path.join(RESULTS_DIR, "backtest_tb.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return {}
+@st.cache_data(ttl=300)
+def load_todays_summary(date_str: str | None = None) -> dict:
+    """Load prediction summary JSON for a given date."""
+    if date_str is None:
+        date_str = _today()
+    year = date_str[:4]
+    compact = _date_compact(date_str)
+    json_path = PRED_DIR / year / f"{compact}_summary.json"
+    if not json_path.is_file():
+        return {}
+    with open(json_path) as f:
+        return json.load(f)
 
 
-@st.cache_data(ttl=3600)
-def load_training():
-    """Load training results."""
-    path = os.path.join(RESULTS_DIR, "training_tb_results.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return {}
+@st.cache_data(ttl=300)
+def load_all_result_summaries() -> pd.DataFrame:
+    """Load every results_summary.json into a DataFrame keyed by date."""
+    rows = []
+    for path in sorted(RESULT_DIR.rglob("*_results_summary.json")):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            data["_file"] = str(path)
+            rows.append(data)
+        except Exception:
+            continue
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    # Normalise column names
+    col_map = {
+        "game_date": "date",
+        "total_predictions": "total",
+        "graded_predictions": "graded",
+        "ungraded_predictions": "ungraded",
+        "total_hits_2tb": "hits_2tb",
+        "hit_rate": "hit_rate",
+        "top_10_hit_rate": "top10_hr",
+        "top_20_hit_rate": "top20_hr",
+        "top_prediction_hit": "top_prediction_hit",
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.sort_values("date").reset_index(drop=True)
+    return df
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     st.set_page_config(
-        page_title="2+ TB Predictor",
+        page_title="2TB Dashboard",
         page_icon="⚾",
         layout="wide",
+        menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
 
-    st.title("⚾ 2+ Total Bases Predictor")
-    st.markdown("Predicts each player's probability of recording **2+ total bases** in today's games.")
-    st.markdown("_*Lineup spots 1-5 only — where the best hitters bat._")
+    st.title("⚾ 2+ Total Bases — Model Dashboard")
+    st.caption(
+        "Reads saved prediction and result files. "
+        "Run the daily workflow to generate fresh data."
+    )
 
-    # Load data
-    predictions = load_predictions()
-    backtest = load_backtest()
-    training = load_training()
-
-    # === Sidebar ===
+    # ------------------------------------------------------------------
+    # Sidebar — date picker
+    # ------------------------------------------------------------------
     st.sidebar.header("⚙️ Settings")
 
-    min_proba = st.sidebar.slider("Min P(2+ TB)", 0.0, 0.5, 0.0, 0.05)
-    max_players = st.sidebar.slider("Max players to show", 10, 100, 50)
+    # Discover available prediction dates
+    pred_dates: list[str] = []
+    for csv_file in sorted(PRED_DIR.rglob("*_predictions.csv")):
+        stem = csv_file.stem  # "20250601_predictions"
+        compact = stem.replace("_predictions", "")
+        if len(compact) == 8 and compact.isdigit():
+            pred_dates.append(f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}")
 
-    if backtest:
-        st.sidebar.markdown("---")
-        st.sidebar.header("📊 Model Performance")
-        overall = backtest.get("overall", {})
-        st.sidebar.metric("AUC", f"{overall.get('auc', 0):.3f}")
-        st.sidebar.metric("Brier Score", f"{overall.get('brier', 0):.3f}")
-        st.sidebar.metric("Base Rate", f"{overall.get('base_rate', 0):.3f}")
+    selected_date = st.sidebar.selectbox(
+        "Prediction date",
+        options=pred_dates if pred_dates else [_today()],
+        index=len(pred_dates) - 1 if pred_dates else 0,
+    )
 
-    # === Main content ===
-    if not predictions:
-        st.warning("No predictions available. Run `python scripts/tb_predict_live.py` first.")
+    # ------------------------------------------------------------------
+    # Load data
+    # ------------------------------------------------------------------
+    pred_df   = load_todays_predictions(selected_date)
+    pred_sum  = load_todays_summary(selected_date)
+    results_df = load_all_result_summaries()
 
-        # Show training results if available
-        if training:
-            st.subheader("📈 Training Results (Holdout)")
-            col1, col2, col3 = st.columns(3)
-            for model_name in ["logreg", "xgb"]:
-                if model_name in training and "holdout" in training[model_name]:
-                    metrics = training[model_name]["holdout"]
-                    col1.metric(f"{model_name.upper()} AUC", f"{metrics.get('auc', 0):.3f}")
-                    col2.metric(f"{model_name.upper()} Brier", f"{metrics.get('brier', 0):.3f}")
-                    col3.metric(f"{model_name.upper()} Acc", f"{metrics.get('accuracy', 0):.3f}")
-        return
+    # ------------------------------------------------------------------
+    # Tab layout
+    # ------------------------------------------------------------------
+    tab_pred, tab_results, tab_history = st.tabs([
+        "📋 Today's Predictions",
+        "✅ Latest Results",
+        "📈 Recent Performance",
+    ])
 
-    df = pd.DataFrame(predictions)
+    # ================================================================
+    # TAB 1 — Today's Predictions
+    # ================================================================
+    with tab_pred:
+        st.header(f"Predictions — {selected_date}")
 
-    # Filter
-    df = df[df["predicted_proba_2tb"] >= min_proba]
-    df = df.head(max_players)
+        if pred_sum:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Games", pred_sum.get("total_games", "—"))
+            c2.metric("Players", pred_sum.get("total_players", "—"))
+            top_pred = pred_sum.get("top_prediction") or {}
+            c3.metric(
+                "Top Player Prob",
+                f"{top_pred.get('predicted_proba_2tb', 0):.1%}"
+                if top_pred.get("predicted_proba_2tb") is not None
+                else "—",
+            )
+            c4.metric("Avg Models", f"{top_pred.get('model_count', '—')}")
+            if top_pred:
+                st.markdown(
+                    f"**Best pick:** Player {top_pred.get('player_id', '?')} "
+                    f"({top_pred.get('team', '?')}) — "
+                    f"vs {top_pred.get('opponent', '?')} "
+                    f"batting #{top_pred.get('lineup_position', '?')}"
+                )
 
-    # === Top picks ===
-    st.subheader("🔥 Top Picks Today")
-    top10 = df.head(10)
-
-    cols = st.columns(5)
-    for i, (_, row) in enumerate(top10.iterrows()):
-        col = cols[i % 5]
-        proba = row["predicted_proba_2tb"]
-        # Color coding
-        if proba >= 0.5:
-            color = "🟢"
-        elif proba >= 0.35:
-            color = "🟡"
+        if pred_df.empty:
+            st.warning("No predictions found for this date.")
         else:
-            color = "🔴"
+            # Rank column
+            pred_df = pred_df.sort_values("predicted_proba_2tb", ascending=False).reset_index(drop=True)
+            pred_df.index += 1  # 1-based ranking
+            pred_df.index.name = "Rank"
 
-        col.metric(
-            label=f"{color} {row['team']} #{row['lineup_position']}",
-            value=f"{proba:.1%}",
-            delta=f"vs {row['opponent']}",
-        )
+            display_cols = [
+                "player_id", "team", "opponent", "lineup_position",
+                "is_home", "predicted_proba_2tb", "model_count"
+            ]
+            avail_cols = [c for c in display_cols if c in pred_df.columns]
+            disp = pred_df[avail_cols].copy()
 
-    # === Full table ===
-    st.subheader("📋 Full Rankings")
+            rename_map = {
+                "player_id": "Player ID",
+                "team": "Team",
+                "opponent": "Opp",
+                "lineup_position": "Spot",
+                "is_home": "Home",
+                "predicted_proba_2tb": "P(2+ TB)",
+                "model_count": "# Models",
+            }
+            disp = disp.rename(columns={k: v for k, v in rename_map.items() if k in disp.columns})
 
-    # Format for display
-    display_df = df[["team", "opponent", "lineup_position", "is_home", "predicted_proba_2tb"]].copy()
-    display_df.columns = ["Team", "Opp", "Spot", "Home", "P(2+ TB)"]
-    display_df["Home"] = display_df["Home"].map({1: "✅", 0: "❌"})
-    display_df["P(2+ TB)"] = display_df["P(2+ TB)"].apply(lambda x: f"{x:.1%}")
+            # Format probability
+            if "P(2+ TB)" in disp.columns:
+                disp["P(2+ TB)"] = disp["P(2+ TB)"].apply(lambda x: f"{float(x):.1%}")
 
-    # Color bar for probability
-    def color_proba(val):
-        proba = float(val.strip("%")) / 100
-        if proba >= 0.5:
-            return "background-color: #2ecc71; color: white"
-        elif proba >= 0.35:
-            return "background-color: #f39c12; color: white"
-        elif proba >= 0.25:
-            return "background-color: #e67e22; color: white"
-        else:
-            return "background-color: #e74c3c; color: white"
+            if "Home" in disp.columns:
+                disp["Home"] = disp["Home"].map({1: "✅", 0: "❌"})
 
-    styled = display_df.style.applymap(color_proba, subset=["P(2+ TB)"])
-    st.dataframe(styled, use_container_width=True, height=600)
-
-    # === By game ===
-    st.subheader("🏟️ By Game")
-    if "game_pk" in df.columns:
-        games = df.groupby(["game_pk", "team", "opponent"]).first().reset_index()
-        for _, game_row in games.iterrows():
-            game_pk = game_row["game_pk"]
-            game_df = df[df["game_pk"] == game_pk].sort_values("predicted_proba_2tb", ascending=False)
-            if len(game_df) == 0:
-                continue
-            away = game_df[game_df["is_home"] == 0]["team"].iloc[0] if len(game_df[game_df["is_home"] == 0]) > 0 else "?"
-            home = game_df[game_df["is_home"] == 1]["team"].iloc[0] if len(game_df[game_df["is_home"] == 1]) > 0 else "?"
-            with st.expander(f"{away} @ {home}"):
-                st.dataframe(
-                    game_df[["team", "lineup_position", "predicted_proba_2tb"]].rename(
-                        columns={"team": "Team", "lineup_position": "Spot", "predicted_proba_2tb": "P(2+ TB)"}
-                    ),
+            # Bar chart of top 20
+            if "P(2+ TB)" in pred_df.columns:
+                chart_df = pred_df.head(20).copy()
+                chart_df["label"] = (
+                    chart_df.get("team", "").astype(str)
+                    + " #"
+                    + chart_df.get("lineup_position", "").astype(str)
+                )
+                st.bar_chart(
+                    chart_df.set_index("label")["predicted_proba_2tb"],
                     use_container_width=True,
                 )
 
-    # === Footer ===
+            st.dataframe(disp, use_container_width=True, height=500)
+
+            # Download
+            csv_data = pred_df.to_csv(index=True)
+            st.download_button("Download CSV", csv_data, f"{selected_date}_predictions.csv")
+
+    # ================================================================
+    # TAB 2 — Latest Results
+    # ================================================================
+    with tab_results:
+        st.header("Latest Graded Results")
+
+        if results_df.empty:
+            st.info("No graded results yet. Run the grader after games are played.")
+        else:
+            latest = results_df.iloc[-1]
+            st.subheader(f"Date: {latest.get('date', '—')}")
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Predictions", latest.get("total", "—"))
+            c2.metric("Graded", latest.get("graded", "—"))
+            c3.metric("Hit Rate", f"{latest['hit_rate']:.1%}" if pd.notna(latest.get('hit_rate')) else "—")
+            top10 = latest.get("top10_hr")
+            c4.metric("Top-10 Hit Rate", f"{top10:.1%}" if pd.notna(top10) else "—")
+
+            c5, c6 = st.columns(2)
+            top20 = latest.get("top20_hr")
+            c5.metric("Top-20 Hit Rate", f"{top20:.1%}" if pd.notna(top20) else "—")
+            top_hit = latest.get("top_prediction_hit")
+            c6.metric("Top Prediction Hit", "✅" if top_hit is True else ("❌" if top_hit is False else "—"))
+
+    # ================================================================
+    # TAB 3 — Recent Performance
+    # ================================================================
+    with tab_history:
+        st.header("Historical Performance")
+
+        if results_df.empty:
+            st.info("Not enough data yet.")
+        else:
+            if "date" not in results_df.columns or results_df["date"].isna().all():
+                st.warning("Results found but no valid dates parsed.")
+                st.dataframe(results_df)
+                return
+
+            max_date = results_df["date"].max()
+
+            def _window(days: int) -> pd.DataFrame:
+                cutoff = max_date - pd.Timedelta(days=days)
+                return results_df[results_df["date"] >= cutoff]
+
+            w7  = _window(7)
+            w30 = _window(30)
+
+            def _agg(window: pd.DataFrame) -> dict:
+                if window.empty:
+                    return {}
+                graded = window["graded"].sum() if "graded" in window.columns else 0
+                hits  = window["hits_2tb"].sum() if "hits_2tb" in window.columns else 0
+                return {
+                    "Days Tracked": len(window),
+                    "Total Graded": int(graded),
+                    "Hit Rate": f"{hits / graded:.2%}" if graded else "—",
+                    "Avg Top-10 HR": f"{window['top10_hr'].mean():.2%}" if "top10_hr" in window.columns and not window["top10_hr"].isna().all() else "—",
+                    "Avg Top-20 HR": f"{window['top20_hr'].mean():.2%}" if "top20_hr" in window.columns and not window["top20_hr"].isna().all() else "—",
+                }
+
+            summary_rows = []
+            for label, w in [("Last 7 Days", w7), ("Last 30 Days", w30), ("Overall", results_df)]:
+                row = _agg(window=w)
+                if row:
+                    row["Period"] = label
+                    summary_rows.append(row)
+
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows).set_index("Period")
+                st.table(summary_df)
+
+            # Line chart of hit rate over time
+            chart_cols = ["date"]
+            for c in ["hit_rate", "top10_hr", "top20_hr"]:
+                if c in results_df.columns:
+                    chart_cols.append(c)
+            chart_df = results_df[chart_cols].dropna(subset=["date"]).set_index("date")
+            if not chart_df.empty:
+                chart_rename = {
+                    "hit_rate": "Hit Rate",
+                    "top10_hr": "Top-10 HR",
+                    "top20_hr": "Top-20 HR",
+                }
+                chart_df = chart_df.rename(columns={k: v for k, v in chart_rename.items() if k in chart_df.columns})
+                st.line_chart(chart_df, use_container_width=True)
+
+    # ------------------------------------------------------------------
+    # Footer
+    # ------------------------------------------------------------------
     st.markdown("---")
-    st.caption("Model: LogReg + XGBoost ensemble | Data: MLB Stats API + Statcast | Updated: " + pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"))
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.caption(
+        f"2TB Model Dashboard v2 | LogReg + XGBoost + LightGBM ensemble | "
+        f"Updated: {now_str}"
+    )
 
 
 if __name__ == "__main__":
