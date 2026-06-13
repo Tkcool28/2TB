@@ -22,7 +22,8 @@ Grading rules:
   - Match predictions to actuals by player_id only (normalized to int).
   - If actual data is missing for a player, that row is marked
     grading_status="ungraded" and excluded from hit-rate metrics.
-  - Total bases = hits + 2*doubles + 3*triples + 4*home_runs.
+  - Total bases = hits + doubles + 2*triples + 3*home_runs
+    (equivalently: singles + 2*doubles + 3*triples + 4*home_runs).
   - hit_2tb = True when actual_total_bases >= 2.
 """
 
@@ -243,10 +244,14 @@ def grade_date(date_str: str) -> None:
     actuals = load_actuals(date_str)
 
     if not actuals:
-        logging.warning(
-            "No actual game-log data found for %s. All rows will be marked ungraded.",
+        logging.error(
+            "No actual game-log data available for %s. "
+            "Aborting — no results will be written so this date remains "
+            "eligible for a future --all-ungraded retry. "
+            "(Source file may be missing or contain no rows for this date.)",
             date_str,
         )
+        sys.exit(1)
 
     # --- Grade each row ---
     graded_rows: list[dict] = []

@@ -148,7 +148,36 @@ class TestNormalizePlayerId:
 # ---------------------------------------------------------------------------
 
 class TestMissingSourceData:
-    def test_missing_source_marks_all_ungraded(self, repo):
+    def test_missing_source_aborts_no_result_files(self, repo):
+        """When actuals source is completely missing, grader aborts with
+        SystemExit and creates NO result files — date stays retryable."""
+        tmp_path, gp = repo
+        pred_rows = [
+            {
+                "date": "2025-06-01", "game_pk": "100", "team": "BOS",
+                "opponent": "NYY", "player_id": "592450", "lineup_position": "1",
+                "is_home": "1", "predicted_proba_2tb": "0.75", "model_count": "3",
+            },
+        ]
+        pred_csv = tmp_path / "predictions" / "2025" / "20250601_predictions.csv"
+        write_predictions_csv(pred_csv, pred_rows)
+        # No game-log file at all
+
+        with pytest.raises(SystemExit):
+            gp.grade_date("2025-06-01")
+
+        # No results files should exist
+        result_csv = tmp_path / "results" / "2025" / "20250601_results.csv"
+        summary_json = tmp_path / "results" / "2025" / "20250601_results_summary.json"
+        assert not result_csv.is_file(), "results CSV should NOT be created"
+        assert not summary_json.is_file(), "summary JSON should NOT be created"
+
+        # Date should still appear as ungraded (eligible for retry)
+        assert "2025-06-01" in gp.find_ungraded_dates()
+
+    def test_empty_actuals_source_aborts_no_result_files(self, repo):
+        """When game-log file exists but has zero rows for the date,
+        grader aborts with SystemExit and creates NO result files."""
         tmp_path, gp = repo
         pred_rows = [
             {
@@ -160,39 +189,28 @@ class TestMissingSourceData:
         pred_csv = tmp_path / "predictions" / "2025" / "20250601_predictions.csv"
         write_predictions_csv(pred_csv, pred_rows)
 
-        gp.grade_date("2025-06-01")
+        # Game log exists but has no rows for 2025-06-01
+        game_log = tmp_path / "data" / "raw" / "full_game_logs_2025.json"
+        write_game_log(game_log, [
+            {
+                "date": "2025-07-15", "game_pk": 200, "player_id": 592450,
+                "player_name": "Test", "team": "BOS", "opponent": "NYY",
+                "home_away": "home", "bats": "R", "batting_order": 1,
+                "at_bats": 4, "hits": 2, "doubles": 1, "triples": 0,
+                "home_runs": 0, "strikeouts": 0, "walks": 0, "year": 2025,
+            },
+        ])
+
+        with pytest.raises(SystemExit):
+            gp.grade_date("2025-06-01")
 
         result_csv = tmp_path / "results" / "2025" / "20250601_results.csv"
-        with result_csv.open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        summary_json = tmp_path / "results" / "2025" / "20250601_results_summary.json"
+        assert not result_csv.is_file(), "results CSV should NOT be created"
+        assert not summary_json.is_file(), "summary JSON should NOT be created"
 
-        assert len(rows) == 1
-        assert rows[0]["grading_status"] == "ungraded"
-        assert rows[0]["hit_2tb"] == ""
-        assert rows[0]["actual_total_bases"] == ""
-
-    def test_missing_source_hit_rate_is_none(self, repo):
-        tmp_path, gp = repo
-        pred_rows = [
-            {
-                "date": "2025-06-01", "game_pk": "100", "team": "BOS",
-                "opponent": "NYY", "player_id": "592450", "lineup_position": "1",
-                "is_home": "1", "predicted_proba_2tb": "0.75", "model_count": "3",
-            },
-        ]
-        pred_csv = tmp_path / "predictions" / "2025" / "20250601_predictions.csv"
-        write_predictions_csv(pred_csv, pred_rows)
-
-        gp.grade_date("2025-06-01")
-
-        summary_path = tmp_path / "results" / "2025" / "20250601_results_summary.json"
-        with summary_path.open() as f:
-            summary = json.load(f)
-
-        assert summary["graded_predictions"] == 0
-        assert summary["ungraded_predictions"] == 1
-        assert summary["hit_rate"] is None
-        assert summary["total_hits_2tb"] == 0
+        # Date should still be retryable
+        assert "2025-06-01" in gp.find_ungraded_dates()
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +606,8 @@ class TestAllUngraded:
         assert ungraded == ["2025-06-02"]
 
     def test_no_false_completed_results_when_source_missing(self, repo):
+        """When source data is missing, grade_date aborts — no result files
+        created, date stays in ungraded list for future retry."""
         tmp_path, gp = repo
         pred_csv = tmp_path / "predictions" / "2025" / "20250601_predictions.csv"
         write_predictions_csv(pred_csv, [
@@ -597,21 +617,23 @@ class TestAllUngraded:
                 "is_home": "1", "predicted_proba_2tb": "0.75", "model_count": "3",
             },
         ])
+        # No game log file
 
         ungraded = gp.find_ungraded_dates()
         assert "2025-06-01" in ungraded
 
-        gp.grade_date("2025-06-01")
+        # grade_date should abort — no result files created
+        with pytest.raises(SystemExit):
+            gp.grade_date("2025-06-01")
 
         result_csv = tmp_path / "results" / "2025" / "20250601_results.csv"
-        assert result_csv.is_file()
+        summary_json = tmp_path / "results" / "2025" / "20250601_results_summary.json"
+        assert not result_csv.is_file()
+        assert not summary_json.is_file()
 
-        with result_csv.open(newline="") as f:
-            rows = list(csv.DictReader(f))
-        assert all(r["grading_status"] == "ungraded" for r in rows)
-
+        # Date must still be eligible for retry
         ungraded_after = gp.find_ungraded_dates()
-        assert "2025-06-01" not in ungraded_after
+        assert "2025-06-01" in ungraded_after
 
 
 # ---------------------------------------------------------------------------
