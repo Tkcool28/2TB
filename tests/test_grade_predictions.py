@@ -586,9 +586,9 @@ class TestRankingMetrics:
 # ---------------------------------------------------------------------------
 
 class TestAllUngraded:
-    def test_only_grades_dates_with_predictions_and_no_results(self, repo):
+    def test_only_grades_dates_with_predictions_and_no_or_partial_results(self, repo):
         tmp_path, gp = repo
-        for date_str, compact in [("2025-06-01", "20250601"), ("2025-06-02", "20250602")]:
+        for date_str, compact in [("2025-06-01", "20250601"), ("2025-06-02", "20250602"), ("2025-06-03", "20250603")]:
             pred_csv = tmp_path / "predictions" / "2025" / f"{compact}_predictions.csv"
             write_predictions_csv(pred_csv, [
                 {
@@ -598,12 +598,17 @@ class TestAllUngraded:
                 },
             ])
 
-        existing_results = tmp_path / "results" / "2025" / "20250601_results.csv"
-        existing_results.parent.mkdir(parents=True, exist_ok=True)
-        existing_results.touch()
+        results_dir = tmp_path / "results" / "2025"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "20250601_results.csv").write_text(
+            "date,player_id,grading_status\n2025-06-01,592450,graded\n"
+        )
+        (results_dir / "20250603_results.csv").write_text(
+            "date,player_id,grading_status\n2025-06-03,592450,ungraded\n"
+        )
 
         ungraded = gp.find_ungraded_dates()
-        assert ungraded == ["2025-06-02"]
+        assert ungraded == ["2025-06-02", "2025-06-03"]
 
     def test_no_false_completed_results_when_source_missing(self, repo):
         """When source data is missing, grade_date aborts — no result files
