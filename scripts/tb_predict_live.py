@@ -289,23 +289,32 @@ def load_statcast_lookups(date_str):
 def load_player_names(date_str=None):
     """Load player_id -> player_name lookup from full_game_logs_YYYY.json files.
 
-    If date_str provided, loads the appropriate year's game logs.
-    Otherwise, aggregates all available years to build comprehensive lookup.
+    When date_str is supplied, searches target year and up to 3 prior years
+    (target_year, target_year-1, target_year-2, target_year-3) as fallbacks.
+    Newer-year names take precedence over older-year names (processed first,
+    do not overwrite existing player IDs).
+
+    Logs warnings for missing lookup files, JSON load failures, and empty
+    final lookup.
 
     Returns dict keyed by player_id (int) -> player_name (str).
     """
+    import logging
+
     player_names = {}
 
     # Determine which years to check
     if date_str:
         target_year = int(date_str[:4])
-        years_to_try = [target_year]
+        years_to_try = [target_year - i for i in range(4)]  # target, -1, -2, -3
+        years_to_try = [y for y in years_to_try if y >= 2022]  # don't go below available data
     else:
         years_to_try = [2025, 2024, 2023, 2022]
 
     for year in years_to_try:
         game_log_path = os.path.join(RAW_DIR, f"full_game_logs_{year}.json")
         if not os.path.exists(game_log_path):
+            logging.warning(f"Missing lookup file: full_game_logs_{year}.json")
             continue
         try:
             with open(game_log_path) as f:
@@ -314,9 +323,16 @@ def load_player_names(date_str=None):
                 pid = row.get("player_id")
                 name = row.get("player_name")
                 if pid and name:
-                    player_names[int(pid)] = name
-        except Exception:
+                    pid_int = int(pid)
+                    # Only add if not already present (newer years processed first)
+                    if pid_int not in player_names:
+                        player_names[pid_int] = name
+        except Exception as e:
+            logging.warning(f"JSON load failure for full_game_logs_{year}.json: {e}")
             continue
+
+    if not player_names:
+        logging.warning("Empty final lookup: no player names loaded")
 
     return player_names
 
