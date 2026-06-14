@@ -5,7 +5,8 @@
 # 2TB daily automation wrapper
 #
 #   1. Generate today's predictions (America/Denver date)
-#   2. Grade all ungraded prior dates
+#   2. Update actuals for ungraded dates (or yesterday as safety net)
+#   3. Grade all ungraded prior dates
 #
 # Safe to re-run — prediction step skips if file already exists.
 # All stdout+stderr is logged to logs/prediction_runs/ and logs/grading_runs/.
@@ -30,13 +31,16 @@ cd "$REPO_ROOT"
 
 # Use America/Denver for date — consistent with the dashboard
 DATE_TODAY="$(TZ=America/Denver date +%Y-%m-%d)"
+DATE_YESTERDAY="$(TZ=America/Denver date -d 'yesterday' +%Y-%m-%d)"
 
 PREDICTION_LOG_DIR="$REPO_ROOT/logs/prediction_runs"
 GRADING_LOG_DIR="$REPO_ROOT/logs/grading_runs"
-mkdir -p "$PREDICTION_LOG_DIR" "$GRADING_LOG_DIR"
+ACTUALS_LOG_DIR="$REPO_ROOT/logs/actuals_runs"
+mkdir -p "$PREDICTION_LOG_DIR" "$GRADING_LOG_DIR" "$ACTUALS_LOG_DIR"
 
 PYTHON="$REPO_ROOT/.venv/bin/python3"
 PREDICTION_SCRIPT="$REPO_ROOT/scripts/run_daily_predictions.py"
+ACTUALS_SCRIPT="$REPO_ROOT/scripts/update_daily_full_game_logs.py"
 GRADING_SCRIPT="$REPO_ROOT/scripts/grade_predictions.py"
 
 FAILED=0
@@ -54,7 +58,20 @@ else
     FAILED=1
 fi
 
-# ── 2. Grade all ungraded prior dates ────────────────────────────────────────
+# ── 2. Update actuals for ungraded dates ──────────────────────────────────────
+echo "=== Updating actuals for ungraded dates ==="
+
+if "$PYTHON" "$ACTUALS_SCRIPT" --all-ungraded \
+    >> "$ACTUALS_LOG_DIR/${DATE_TODAY//-/}.log" 2>&1; then
+    echo "=== Actuals update completed successfully ==="
+else
+    EXIT_CODE=$?
+    echo "=== FAIL: Actuals update exited with code $EXIT_CODE ===" >&2
+    echo "  Log: $ACTUALS_LOG_DIR/${DATE_TODAY//-/}.log"
+    FAILED=1
+fi
+
+# ── 3. Grade all ungraded prior dates ────────────────────────────────────────
 echo "=== Grading all ungraded prior dates ==="
 
 if "$PYTHON" "$GRADING_SCRIPT" --all-ungraded \
