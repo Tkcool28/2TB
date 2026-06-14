@@ -20,12 +20,14 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import logging
 import os
 import sys
 import traceback
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import numpy as np
 
 # Add the scripts directory to the path to import tb_predict_live
@@ -71,7 +73,7 @@ def main():
             print(f"Error: Invalid date format {date_str}. Expected YYYY-MM-DD.")
             sys.exit(1)
     else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = datetime.now(ZoneInfo("America/Denver")).strftime("%Y-%m-%d")
 
     # Setup directories
     predictions_base = os.path.join(os.path.dirname(__file__), "..", "predictions")
@@ -92,10 +94,19 @@ def main():
     logging.info(f"Log file: {log_file}")
 
     # Check if output files already exist (to avoid overwriting)
-    if os.path.exists(csv_path) or os.path.exists(json_path):
-        logging.warning(f"Output files for {date_str} already exist. Skipping to avoid overwriting.")
-        print(f"Output files for {date_str} already exist. Skipping.")
-        sys.exit(0)
+    # But we'll check if they have data below for zero-prediction protection
+    existing_csv_path = csv_path if os.path.exists(csv_path) else None
+    existing_json_path = json_path if os.path.exists(json_path) else None
+
+    # Check if existing files have data (for zero-prediction protection)
+    existing_has_data = False
+    existing_csv_lines = []  # Initialize to avoid scope issues
+    if existing_csv_path:
+        with open(existing_csv_path, 'r') as f:
+            existing_csv_lines = f.readlines()
+        existing_has_data = len(existing_csv_lines) > 1  # More than just header
+        if existing_has_data:
+            logging.info(f"Found existing predictions file with {len(existing_csv_lines)-1} rows - will preserve if new run produces 0 predictions")
 
     start_time = datetime.now()
 
@@ -118,6 +129,7 @@ def main():
             total_players = 0
             top_prediction = None
             top_probability = 0.0
+            all_predictions = []  # Initialize empty list for no-games case
         else:
             # Load local histories and other data (same as tb_predict_live)
             logging.info("Loading local player/pitcher histories...")
@@ -260,27 +272,35 @@ def main():
                 top_prediction = None
                 top_probability = 0.0
 
-        # Save predictions CSV
+        # Save predictions CSV with zero-prediction overwrite protection
         logging.info(f"Saving predictions to {csv_path}")
         if all_predictions:
-            import csv
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=[
                     "date", "game_pk", "team", "opponent", "player_id",
                     "player_name", "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
                 ])
-                # Write header
                 writer.writeheader()
                 for pred in all_predictions:
                     writer.writerow(pred)
         else:
-            # Write empty CSV with header
-            with open(csv_path, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    "date", "game_pk", "team", "opponent", "player_id",
-                    "player_name", "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
-                ])
-                writer.writeheader()
+            # ZERO-PREDICTION PROTECTION: Don't overwrite valid data
+            if existing_has_data:
+                logging.warning(
+                    f"ZERO-PREDICTION GUARD: Found {len(existing_csv_lines)-1} predictions in existing file - "
+                    f"preserving valid data instead of overwriting with empty file"
+                )
+                print(f"Warning: No predictions generated. Preserving existing predictions file.")
+                # Skip writing CSV - preserve existing file
+            else:
+                # No prior data, write empty template for downstream tools
+                logging.warning("No predictions generated and no prior valid file exists - writing empty CSV template")
+                with open(csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=[
+                        "date", "game_pk", "team", "opponent", "player_id",
+                        "player_name", "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
+                    ])
+                    writer.writeheader()
 
         # Save summary JSON
         end_time = datetime.now()
@@ -297,8 +317,15 @@ def main():
         }
 
         logging.info(f"Saving summary to {json_path}")
-        with open(json_path, "w") as f:
-            json.dump(summary, f, indent=2)
+        # Preserve existing summary if we have zero predictions and existing data
+        if existing_has_data and not all_predictions and existing_json_path:
+            logging.warning(
+                "ZERO-PREDICTION GUARD: Preserving existing summary JSON to match preserved CSV"
+            )
+            print("Warning: Preserving existing summary JSON file.")
+        else:
+            with open(json_path, "w") as f:
+                json.dump(summary, f, indent=2)
 
         # Also write live_predictions.json for the dashboard (list of predictions)
         live_path = os.path.join(os.path.dirname(__file__), "..", "results", "live_predictions.json")
