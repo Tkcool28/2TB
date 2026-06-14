@@ -557,12 +557,12 @@ def fetch_player_gamelogs(player_ids, season, group, cache_dir, api_delay):
                 stat = split.get("stat", {})
                 if group == "hitting":
                     row = {
-                        "date": game.get("gameDate", "")[:10],
+                        "date": split.get("date", "")[:10],
                         "game_pk": game.get("gamePk", 0),
                         "player_id": pid,
                         "team": split.get("team", {}).get("abbreviation", ""),
                         "opponent": split.get("opponent", {}).get("abbreviation", ""),
-                        "home_away": "home" if game.get("isGameOfSplit", "") == "home" else "away",
+                        "home_away": "home" if split.get("isHome", False) else "away",
                         "at_bats": int(stat.get("atBats", 0) or 0),
                         "hits": int(stat.get("hits", 0) or 0),
                         "doubles": int(stat.get("doubles", 0) or 0),
@@ -583,12 +583,12 @@ def fetch_player_gamelogs(player_ids, season, group, cache_dir, api_delay):
                     all_rows.append(row)
                 elif group == "pitching":
                     row = {
-                        "date": game.get("gameDate", "")[:10],
+                        "date": split.get("date", "")[:10],
                         "game_pk": game.get("gamePk", 0),
                         "player_id": pid,
                         "team": split.get("team", {}).get("abbreviation", ""),
                         "opponent": split.get("opponent", {}).get("abbreviation", ""),
-                        "home_away": "home" if game.get("isGameOfSplit", "") == "home" else "away",
+                        "home_away": "home" if split.get("isHome", False) else "away",
                         "innings_pitched": _parse_ip(stat.get("inningsPitched", 0)),
                         "earned_runs": int(stat.get("earnedRuns", 0) or 0),
                         "year": season,

@@ -1,0 +1,16 @@
+{
+  "date": "2026-06-14",
+  "total_games": 15,
+  "total_players": 140,
+  "top_prediction": {
+    "player_id": 660271,
+    "player_name": "Shohei Ohtani",
+    "team": "LAD",
+    "opponent": "CWS",
+    "lineup_position": 1,
+    "predicted_proba_2tb": 0.3495
+  },
+  "top_probability": 0.3495,
+  "pipeline_runtime_seconds": 2.44,
+  "model_version": "v2"
+}
