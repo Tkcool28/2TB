@@ -48,6 +48,7 @@ def test_run_daily_predictions_creates_outputs(tmp_path):
             "team",
             "opponent",
             "player_id",
+            "player_name",
             "lineup_position",
             "is_home",
             "predicted_proba_2tb",
@@ -55,6 +56,13 @@ def test_run_daily_predictions_creates_outputs(tmp_path):
         }
         missing = expected_cols - set(reader.fieldnames)
         assert not missing, f"Missing columns in CSV: {missing}"
+
+        # Verify player_name values are populated (not empty or all "Unknown")
+        player_names = [row.get("player_name", "") for row in rows if row.get("player_name")]
+        assert player_names, "player_name column is empty"
+        # Allow some "Unknown" values for players not yet in game logs, but most should have names
+        known_names = [n for n in player_names if n and n != "Unknown"]
+        assert len(known_names) > len(player_names) // 2, "Most player names should be resolved"
 
     # ------------------------------------------------------------------
     # JSON sanity checks
@@ -67,6 +75,11 @@ def test_run_daily_predictions_creates_outputs(tmp_path):
 
     assert data["total_games"] > 0, "total_games should be > 0"
     assert data["total_players"] > 0, "total_players should be > 0"
+
+    # Verify top_prediction includes player_name
+    top_pred = data.get("top_prediction", {})
+    if top_pred and "player_id" in top_pred:
+        assert "player_name" in top_pred, "top_prediction should include player_name"
 
     # ------------------------------------------------------------------
     # Cleanup – remove the files this test created
