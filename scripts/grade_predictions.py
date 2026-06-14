@@ -407,10 +407,28 @@ def find_ungraded_dates(through_date: str | None = None) -> list[str]:
             continue
         year = date_compact[:4]
         result_csv = RESULTS_DIR / year / f"{date_compact}_results.csv"
-        if not result_csv.is_file():
+        if not result_csv.is_file() or result_has_ungraded_rows(result_csv):
             dates.append(d)
     dates.sort()
     return dates
+
+
+def result_has_ungraded_rows(result_csv: Path) -> bool:
+    """Return True when an existing results CSV still has ungraded rows.
+
+    Partial result files can happen when a late game was not final during the
+    first grading pass. Treat those dates as retryable so --all-ungraded can
+    regrade after the actuals updater recovers newly-final boxscores.
+    """
+    try:
+        with result_csv.open(newline="") as f:
+            reader = csv.DictReader(f)
+            if "grading_status" not in (reader.fieldnames or []):
+                return False
+            return any((row.get("grading_status") or "").lower() == "ungraded" for row in reader)
+    except OSError as exc:
+        logging.warning("Could not inspect result CSV %s: %s", result_csv, exc)
+        return False
 
 
 def main() -> None:

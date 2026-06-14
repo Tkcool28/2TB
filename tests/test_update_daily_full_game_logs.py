@@ -548,8 +548,8 @@ class TestAllUngraded:
         dates = mod.find_ungraded_dates(through_date="2026-06-13")
         assert "2026-06-13" in dates
 
-    def test_skip_dates_with_results(self, env_setup, monkeypatch):
-        """Dates with both predictions and results are not returned."""
+    def test_skip_dates_with_completed_results(self, env_setup, monkeypatch):
+        """Dates with predictions and fully graded results are not returned."""
         mod = env_setup["mod"]
 
         pred_dir = env_setup["predictions"] / "2026"
@@ -560,11 +560,29 @@ class TestAllUngraded:
         res_dir = env_setup["results"] / "2026"
         res_dir.mkdir(parents=True)
         (res_dir / "20260613_results.csv").write_text(
-            "date,player_id\n2026-06-13,1\n"
+            "date,player_id,grading_status\n2026-06-13,1,graded\n"
         )
 
         dates = mod.find_ungraded_dates(through_date="2026-06-13")
         assert "2026-06-13" not in dates
+
+    def test_partial_results_with_ungraded_rows_are_retryable(self, env_setup, monkeypatch):
+        """Partial results stay eligible so later-final games can be recovered."""
+        mod = env_setup["mod"]
+
+        pred_dir = env_setup["predictions"] / "2026"
+        pred_dir.mkdir(parents=True)
+        (pred_dir / "20260613_predictions.csv").write_text(
+            "date,player_id,predicted_proba_2tb\n2026-06-13,1,0.5\n2026-06-13,2,0.4\n"
+        )
+        res_dir = env_setup["results"] / "2026"
+        res_dir.mkdir(parents=True)
+        (res_dir / "20260613_results.csv").write_text(
+            "date,player_id,grading_status\n2026-06-13,1,graded\n2026-06-13,2,ungraded\n"
+        )
+
+        dates = mod.find_ungraded_dates(through_date="2026-06-13")
+        assert "2026-06-13" in dates
 
     def test_non_prediction_files_ignored(self, env_setup, monkeypatch):
         """Files not ending in _predictions.csv are ignored."""
