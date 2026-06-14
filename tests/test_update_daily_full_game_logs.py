@@ -544,7 +544,8 @@ class TestAllUngraded:
             "date,player_id,predicted_proba_2tb\n2026-06-13,1,0.5\n"
         )
 
-        dates = mod.find_ungraded_dates()
+        # Must pass through_date explicitly; default caps at yesterday
+        dates = mod.find_ungraded_dates(through_date="2026-06-13")
         assert "2026-06-13" in dates
 
     def test_skip_dates_with_results(self, env_setup, monkeypatch):
@@ -562,7 +563,7 @@ class TestAllUngraded:
             "date,player_id\n2026-06-13,1\n"
         )
 
-        dates = mod.find_ungraded_dates()
+        dates = mod.find_ungraded_dates(through_date="2026-06-13")
         assert "2026-06-13" not in dates
 
     def test_non_prediction_files_ignored(self, env_setup, monkeypatch):
@@ -573,13 +574,76 @@ class TestAllUngraded:
         pred_dir.mkdir(parents=True)
         (pred_dir / "notes.txt").write_text("not a prediction")
 
-        dates = mod.find_ungraded_dates()
+        dates = mod.find_ungraded_dates(through_date="2026-12-31")
         assert dates == []
 
 
 # ---------------------------------------------------------------------------
-# Tests: correct schema fields
+# Tests: --through-date filtering (same-day grading blocker fix)
 # ---------------------------------------------------------------------------
+
+class TestThroughDateFilter:
+    @staticmethod
+    def _make_pred(pred_dir: Path, date_compact: str) -> None:
+        """Write a minimal predictions CSV for a given YYYYMMDD."""
+        d = pred_dir / date_compact[:4]
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{date_compact}_predictions.csv").write_text(
+            f"date,player_id,predicted_proba_2tb\n{date_compact[:4]}-{date_compact[4:6]}-{date_compact[6:8]},1,0.5\n"
+        )
+
+    def test_today_excluded_by_default(self, env_setup, monkeypatch):
+        """Today's prediction file (no results) is excluded by default
+        (through_date defaults to yesterday in America/Denver)."""
+        mod = env_setup["mod"]
+        pred_dir = env_setup["predictions"]
+
+        # Create a prediction file for "today" (2026-06-13 in test env)
+        # Yesterday in Denver today = 2026-06-12, so 2026-06-13 > yesterday → excluded
+        self._make_pred(pred_dir, "20260613")
+
+        dates = mod.find_ungraded_dates(through_date="2026-06-12")
+        assert "2026-06-13" not in dates
+
+    def test_future_prediction_excluded(self, env_setup, monkeypatch):
+        """Future prediction files are excluded by through-date cap."""
+        mod = env_setup["mod"]
+        pred_dir = env_setup["predictions"]
+
+        self._make_pred(pred_dir, "20260614")
+        self._make_pred(pred_dir, "20260615")
+
+        dates = mod.find_ungraded_dates(through_date="2026-06-13")
+        assert "2026-06-14" not in dates
+        assert "2026-06-15" not in dates
+
+    def test_past_ungraded_included(self, env_setup, monkeypatch):
+        """Past ungraded prediction files are still included when within cap."""
+        mod = env_setup["mod"]
+        pred_dir = env_setup["predictions"]
+
+        self._make_pred(pred_dir, "20260610")
+        self._make_pred(pred_dir, "20260611")
+        self._make_pred(pred_dir, "20260612")
+
+        dates = mod.find_ungraded_dates(through_date="2026-06-13")
+        assert "2026-06-10" in dates
+        assert "2026-06-11" in dates
+        assert "2026-06-12" in dates
+
+    def test_through_date_inclusive(self, env_setup, monkeypatch):
+        """through_date is inclusive: dates <= through_date are included."""
+        mod = env_setup["mod"]
+        pred_dir = env_setup["predictions"]
+
+        self._make_pred(pred_dir, "20260611")
+        self._make_pred(pred_dir, "20260612")
+        self._make_pred(pred_dir, "20260613")
+
+        dates = mod.find_ungraded_dates(through_date="2026-06-12")
+        assert "2026-06-11" in dates
+        assert "2026-06-12" in dates
+        assert "2026-06-13" not in dates
 
 class TestRowSchema:
     def test_output_fields_match_pull_full_game_logs(self, env_setup, monkeypatch):

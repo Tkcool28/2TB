@@ -59,9 +59,9 @@ else
 fi
 
 # ── 2. Update actuals for ungraded dates ──────────────────────────────────────
-echo "=== Updating actuals for ungraded dates ==="
+echo "=== Updating actuals for ungraded dates (through $DATE_YESTERDAY) ==="
 
-if "$PYTHON" "$ACTUALS_SCRIPT" --all-ungraded \
+if "$PYTHON" "$ACTUALS_SCRIPT" --all-ungraded --through-date "$DATE_YESTERDAY" \
     >> "$ACTUALS_LOG_DIR/${DATE_TODAY//-/}.log" 2>&1; then
     echo "=== Actuals update completed successfully ==="
 else
@@ -72,9 +72,9 @@ else
 fi
 
 # ── 3. Grade all ungraded prior dates ────────────────────────────────────────
-echo "=== Grading all ungraded prior dates ==="
+echo "=== Grading all ungraded prior dates (through $DATE_YESTERDAY) ==="
 
-if "$PYTHON" "$GRADING_SCRIPT" --all-ungraded \
+if "$PYTHON" "$GRADING_SCRIPT" --all-ungraded --through-date "$DATE_YESTERDAY" \
     >> "$GRADING_LOG_DIR/${DATE_TODAY//-/}.log" 2>&1; then
     echo "=== Grading completed successfully ==="
 else

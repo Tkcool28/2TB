@@ -34,8 +34,9 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -383,8 +384,17 @@ def grade_date(date_str: str) -> None:
     )
 
 
-def find_ungraded_dates() -> list[str]:
-    """Return sorted list of dates that have predictions but no results CSV."""
+def find_ungraded_dates(through_date: str | None = None) -> list[str]:
+    """Return sorted list of dates that have predictions but no results CSV.
+
+    If through_date is given (YYYY-MM-DD), only include dates <= through_date.
+    If through_date is None, defaults to yesterday in America/Denver (never today).
+    """
+    if through_date is None:
+        tz = ZoneInfo("America/Denver")
+        from datetime import timedelta
+        through_date = (datetime.now(tz).date() - timedelta(days=1)).isoformat()
+
     dates: list[str] = []
     for csv_path in PREDICTIONS_DIR.rglob("*_predictions.csv"):
         # Extract YYYYMMDD from filename
@@ -392,10 +402,13 @@ def find_ungraded_dates() -> list[str]:
         date_compact = stem.replace("_predictions", "")
         if len(date_compact) != 8 or not date_compact.isdigit():
             continue
+        d = f"{date_compact[:4]}-{date_compact[4:6]}-{date_compact[6:8]}"
+        if d > through_date:
+            continue
         year = date_compact[:4]
         result_csv = RESULTS_DIR / year / f"{date_compact}_results.csv"
         if not result_csv.is_file():
-            dates.append(f"{date_compact[:4]}-{date_compact[4:6]}-{date_compact[6:8]}")
+            dates.append(d)
     dates.sort()
     return dates
 
@@ -409,12 +422,20 @@ def main() -> None:
         action="store_true",
         help="Grade all dates that have predictions but no results yet",
     )
+    parser.add_argument(
+        "--through-date",
+        default=None,
+        help=(
+            "Only grade dates <= this date (YYYY-MM-DD). "
+            "Defaults to yesterday in America/Denver when used with --all-ungraded."
+        ),
+    )
     args = parser.parse_args()
 
     if args.date:
         grade_date(args.date)
     else:
-        dates = find_ungraded_dates()
+        dates = find_ungraded_dates(through_date=args.through_date)
         if not dates:
             print("No ungraded dates found.")
             return
