@@ -149,6 +149,11 @@ def main():
             pitcher_basics = tb_predict_live.load_pitcher_basics(date_str)
             logging.info(f"  Pitcher basics: {len(pitcher_basics)} entries")
 
+            # Load player name lookup
+            logging.info("Loading player name lookup...")
+            player_names = tb_predict_live.load_player_names(date_str)
+            logging.info(f"  Player names: {len(player_names)} entries")
+
             # Predict for each game and lineup spots 1-5
             logging.info("Generating predictions...")
             all_predictions = []
@@ -224,6 +229,7 @@ def main():
                             "team": game[team_key],
                             "opponent": game[opp_key],
                             "player_id": int(player_id_str),
+                            "player_name": player_names.get(int(player_id_str), "Unknown"),
                             "lineup_position": pos,
                             "is_home": features["is_home"],
                             "predicted_proba_2tb": round(float(avg_proba), 4),
@@ -243,6 +249,7 @@ def main():
                 top_pred = all_predictions[0]
                 top_prediction = {
                     "player_id": top_pred["player_id"],
+                    "player_name": top_pred.get("player_name", "Unknown"),
                     "team": top_pred["team"],
                     "opponent": top_pred["opponent"],
                     "lineup_position": top_pred["lineup_position"],
@@ -260,7 +267,7 @@ def main():
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=[
                     "date", "game_pk", "team", "opponent", "player_id",
-                    "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
+                    "player_name", "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
                 ])
                 # Write header
                 writer.writeheader()
@@ -271,7 +278,7 @@ def main():
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=[
                     "date", "game_pk", "team", "opponent", "player_id",
-                    "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
+                    "player_name", "lineup_position", "is_home", "predicted_proba_2tb", "model_count"
                 ])
                 writer.writeheader()
 

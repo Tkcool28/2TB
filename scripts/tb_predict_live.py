@@ -286,6 +286,41 @@ def load_statcast_lookups(date_str):
     return batter_sc, pitcher_sc
 
 
+def load_player_names(date_str=None):
+    """Load player_id -> player_name lookup from full_game_logs_YYYY.json files.
+
+    If date_str provided, loads the appropriate year's game logs.
+    Otherwise, aggregates all available years to build comprehensive lookup.
+
+    Returns dict keyed by player_id (int) -> player_name (str).
+    """
+    player_names = {}
+
+    # Determine which years to check
+    if date_str:
+        target_year = int(date_str[:4])
+        years_to_try = [target_year]
+    else:
+        years_to_try = [2025, 2024, 2023, 2022]
+
+    for year in years_to_try:
+        game_log_path = os.path.join(RAW_DIR, f"full_game_logs_{year}.json")
+        if not os.path.exists(game_log_path):
+            continue
+        try:
+            with open(game_log_path) as f:
+                games = json.load(f)
+            for row in games:
+                pid = row.get("player_id")
+                name = row.get("player_name")
+                if pid and name:
+                    player_names[int(pid)] = name
+        except Exception:
+            continue
+
+    return player_names
+
+
 def load_pitcher_basics(date_str):
     """Load pitcher basics zip.  Use latest year strictly < target year if available.
 
